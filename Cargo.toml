@@ -1,9 +1,9 @@
 [package]
-name = "time-tracker"
-version = "0.3.0"
+name = "omatracker"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
-description = "Project time tracking backend and CLI for the Omarchy TimeTracker plugin"
+description = "Project time tracking backend and CLI for the Omarchy OmaTracker plugin"
 
 [dependencies]
 anyhow = "1.0"

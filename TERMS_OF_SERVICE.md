@@ -1,4 +1,4 @@
-# Terms of Service
+# OmaTracker Terms of Service
 
 Effective date: September 18, 2026
 

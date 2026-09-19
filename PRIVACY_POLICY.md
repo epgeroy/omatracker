@@ -1,4 +1,4 @@
-# Privacy Policy
+# OmaTracker Privacy Policy
 
 Effective date: September 18, 2026
 
@@ -14,8 +14,8 @@ OmaTracker stores the following information locally on the user's computer:
 - The configured rclone remote name and destination folder.
 
 By default, this data is stored in
-`~/.config/omarchy/time-tracker.json`. Generated report inputs and PDFs are
-stored in `~/.cache/omarchy/time-tracker/` until their upload completes.
+`~/.config/omarchy/omatracker.json`. Generated report inputs and PDFs are
+stored in `~/.cache/omarchy/omatracker/` until their upload completes.
 
 ## Information the plugin does not collect
 

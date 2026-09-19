@@ -13,8 +13,8 @@ Item {
 
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string sourcePath: localFilePath(Qt.resolvedUrl("."))
-  readonly property string backendPath: sourcePath + "/bin/time-tracker"
-  property string dataPath: home + "/.config/omarchy/time-tracker.json"
+  readonly property string backendPath: sourcePath + "/bin/omatracker"
+  property string dataPath: home + "/.config/omarchy/omatracker.json"
   property bool configured: false
 
   property var state: emptyState()
@@ -27,7 +27,7 @@ Item {
   property int activeProjectSeconds: 0
   property int runningTimers: 0
   property int activeProjectRunningTimers: 0
-  property string setupStatus: "Checking TimeTracker backend"
+  property string setupStatus: "Checking OmaTracker backend"
   property string reportStatus: "No PDF reports queued"
   property string syncStatus: "Not synced yet"
   property string syncError: ""
@@ -61,7 +61,7 @@ Item {
       tasks: [],
       entries: [],
       reports: [],
-      drive: { remote: "", folder: "TimeTracker", syncOnStartup: false },
+      drive: { remote: "", folder: "OmaTracker", syncOnStartup: false },
       sync: { status: "Not synced yet", error: "", lastSyncedAt: 0 }
     }
   }
@@ -130,7 +130,7 @@ Item {
     processStderrFinished = false
     processExited = false
     processExitCode = -1
-    commandProcess.command = ["sh", "-c", "exec \"$@\"", "time-tracker", backendPath, "--data-path", dataPath].concat(next.args)
+    commandProcess.command = ["sh", "-c", "exec \"$@\"", "omatracker", backendPath, "--data-path", dataPath].concat(next.args)
     commandProcess.running = true
     processTimeout.restart()
   }
@@ -169,7 +169,7 @@ Item {
       if (exitCode === 0) applyStatus(stdout)
       else applyBackendError(outputSummary(stdout, stderr))
     } else {
-      if (exitCode !== 0) backendError = outputSummary(stdout, stderr) || "TimeTracker command failed"
+      if (exitCode !== 0) backendError = outputSummary(stdout, stderr) || "OmaTracker command failed"
       enqueue("status", ["status", "--json"], {})
     }
     startNextAction()
@@ -190,7 +190,7 @@ Item {
         if (activeTasks[i].running === true) activeProjectRunningTimers++
       nowMs = Math.max(0, Number(next.nowMs) || Date.now())
       statusSnapshotMs = nowMs
-      setupStatus = String(next.setupStatus || "TimeTracker backend is ready")
+      setupStatus = String(next.setupStatus || "OmaTracker backend is ready")
       reportStatus = String(next.reportStatus || "No PDF reports queued")
       syncStatus = String(next.syncStatus || "Not synced yet")
       syncError = String(next.syncError || "")
@@ -203,15 +203,15 @@ Item {
         if (state.drive && state.drive.syncOnStartup === true) enqueue("sync", ["sync"], {})
       }
     } catch (error) {
-      applyBackendError("Could not read TimeTracker status: " + error)
+      applyBackendError("Could not read OmaTracker status: " + error)
     }
   }
 
   function applyBackendError(message) {
     backendError = message === ""
-      ? "TimeTracker backend is unavailable at " + backendPath
+      ? "OmaTracker backend is unavailable at " + backendPath
       : message
-    setupStatus = "TimeTracker backend unavailable"
+    setupStatus = "OmaTracker backend unavailable"
     syncStatus = backendError
     syncError = backendError
     loaded = false
@@ -268,7 +268,7 @@ Item {
 
   function updateDrive(remote, folder, syncOnStartup) {
     enqueue("drive-update", [
-      "drive", "update", "--remote", String(remote || ""), "--folder", String(folder || "TimeTracker"),
+      "drive", "update", "--remote", String(remote || ""), "--folder", String(folder || "OmaTracker"),
       "--sync-on-startup", String(syncOnStartup === true)
     ], {})
   }
@@ -339,6 +339,6 @@ Item {
     id: processTimeout
     interval: 120000
     repeat: false
-    onTriggered: root.failCurrentProcess("TimeTracker command timed out after two minutes")
+    onTriggered: root.failCurrentProcess("OmaTracker command timed out after two minutes")
   }
 }

@@ -1,22 +1,22 @@
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use std::path::PathBuf;
-use time_tracker::{
+use omatracker::{
     ProjectChanges, add_task, check_reports, create_project, default_data_path, edit_task,
     export_report, install_report_timer, remove_report_timer, remove_task, reset_active_project,
     reset_task, retry_reports, select_project, start_task, status, stop_task, sync_state,
     update_drive, update_project,
 };
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
-    name = "time-tracker",
+    name = "omatracker",
     version,
     about = "Project time tracking backend for Omarchy"
 )]
 struct Cli {
-    /// JSON ledger path. Defaults to ~/.config/omarchy/time-tracker.json.
-    #[arg(long, global = true, env = "TIME_TRACKER_DATA_PATH")]
+    /// JSON ledger path. Defaults to ~/.config/omarchy/omatracker.json.
+    #[arg(long, global = true, env = "OMATRACKER_DATA_PATH")]
     data_path: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -120,7 +120,7 @@ enum DriveCommand {
     Update {
         #[arg(long, default_value = "")]
         remote: String,
-        #[arg(long, default_value = "TimeTracker")]
+        #[arg(long, default_value = "OmaTracker")]
         folder: String,
         #[arg(long, default_value_t = true)]
         sync_on_startup: bool,

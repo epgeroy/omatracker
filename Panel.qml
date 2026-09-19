@@ -9,8 +9,8 @@ import "TaskModel.js" as TaskModel
 
 Panel {
   id: root
-  moduleName: "time-tracker"
-  ipcTarget: "time-tracker"
+  moduleName: "omatracker"
+  ipcTarget: "omatracker"
   // We own the IPC handler so `open`/`close` route through the overrides
   // below, which also tear down an in-progress inline edit.
   manageIpc: false
@@ -18,7 +18,7 @@ Panel {
   // A bar widget exists once per monitor. The service is the sole owner of
   // state and subprocesses so a report or Drive upload only runs once.
   readonly property var tracker: bar && bar.shell
-    ? bar.shell.serviceFor("sophie.time-tracker") : null
+    ? bar.shell.serviceFor("epgeroy.omatracker") : null
   readonly property var trackerState: tracker ? tracker.state : ({ projects: [], drive: ({}) })
   readonly property var tasks: tracker ? tracker.activeTasks : []
   readonly property bool loaded: tracker ? tracker.loaded : false
@@ -76,7 +76,7 @@ Panel {
   readonly property string activeProjectText: tracker ? tracker.activeProjectText : "00:00:00"
 
   readonly property string home: Quickshell.env("HOME") || ""
-  readonly property string configuredPath: String(setting("dataPath", "~/.config/omarchy/time-tracker.json"))
+  readonly property string configuredPath: String(setting("dataPath", "~/.config/omarchy/omatracker.json"))
   readonly property string dataFilePath: configuredPath.indexOf("~/") === 0
     ? home + configuredPath.slice(1)
     : configuredPath
@@ -313,7 +313,7 @@ Panel {
   }
 
   IpcHandler {
-    target: "time-tracker"
+    target: "omatracker"
     function open(): void { root.open() }
     function close(): void { root.close() }
     function show(): void { root.open() }
@@ -570,7 +570,7 @@ Panel {
           TextField {
             id: driveRemoteField
             width: parent.width
-            placeholderText: "rclone remote name, e.g. time-tracker"
+            placeholderText: "rclone remote name, e.g. omatracker"
             foreground: root.contentForeground
             font.family: root.contentFontFamily
           }

@@ -321,6 +321,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "omatracker"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "fs2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -475,20 +489,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
-]
-
-[[package]]
-name = "time-tracker"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "fs2",
- "serde",
- "serde_json",
- "tempfile",
- "uuid",
 ]
 
 [[package]]

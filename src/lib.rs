@@ -15,7 +15,7 @@ pub const STATE_VERSION: u32 = 2;
 pub const DEFAULT_PROJECT_ID: &str = "project-unassigned";
 
 fn default_drive_folder() -> String {
-    "TimeTracker".to_owned()
+    "OmaTracker".to_owned()
 }
 
 fn default_sync_status() -> String {
@@ -266,11 +266,11 @@ fn default_project() -> Project {
 }
 
 pub fn default_data_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".config/omarchy/time-tracker.json"))
+    Ok(home_dir()?.join(".config/omarchy/omatracker.json"))
 }
 
 pub fn cache_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".cache/omarchy/time-tracker"))
+    Ok(home_dir()?.join(".cache/omarchy/omatracker"))
 }
 
 pub fn home_dir() -> Result<PathBuf> {
@@ -1556,15 +1556,15 @@ pub fn install_report_timer(path: &Path) -> Result<()> {
     let unit_dir = systemd_user_unit_dir()?;
     fs::create_dir_all(&unit_dir)
         .with_context(|| format!("could not create {}", unit_dir.display()))?;
-    let executable = std::env::current_exe().context("could not locate time-tracker binary")?;
-    let service_name = "time-tracker-report-check.service";
-    let timer_name = "time-tracker-report-check.timer";
+    let executable = std::env::current_exe().context("could not locate omatracker binary")?;
+    let service_name = "omatracker-report-check.service";
+    let timer_name = "omatracker-report-check.timer";
     let service = format!(
-        "[Unit]\nDescription=TimeTracker report check\n\n[Service]\nType=oneshot\nExecStart={} --data-path {} report check\n",
+        "[Unit]\nDescription=OmaTracker report check\n\n[Service]\nType=oneshot\nExecStart={} --data-path {} report check\n",
         systemd_argument(&executable),
         systemd_argument(path),
     );
-    let timer = "[Unit]\nDescription=Run TimeTracker report checks\n\n[Timer]\nOnBootSec=2m\nOnUnitActiveSec=15m\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n";
+    let timer = "[Unit]\nDescription=Run OmaTracker report checks\n\n[Timer]\nOnBootSec=2m\nOnUnitActiveSec=15m\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n";
     atomic_write(&unit_dir.join(service_name), service.as_bytes())?;
     atomic_write(&unit_dir.join(timer_name), timer.as_bytes())?;
     run_command(
@@ -1584,14 +1584,14 @@ pub fn install_report_timer(path: &Path) -> Result<()> {
 
 pub fn remove_report_timer() -> Result<()> {
     let unit_dir = systemd_user_unit_dir()?;
-    let service = unit_dir.join("time-tracker-report-check.service");
-    let timer = unit_dir.join("time-tracker-report-check.timer");
+    let service = unit_dir.join("omatracker-report-check.service");
+    let timer = unit_dir.join("omatracker-report-check.timer");
     let _ = Command::new("systemctl")
         .args([
             "--user",
             "disable",
             "--now",
-            "time-tracker-report-check.timer",
+            "omatracker-report-check.timer",
         ])
         .output();
     if service.exists() {
@@ -1627,26 +1627,26 @@ fn systemd_argument(value: &Path) -> String {
 
 fn report_timer_enabled() -> bool {
     Command::new("systemctl")
-        .args(["--user", "is-enabled", "time-tracker-report-check.timer"])
+        .args(["--user", "is-enabled", "omatracker-report-check.timer"])
         .output()
         .is_ok_and(|output| output.status.success())
 }
 
 fn template_path(template_id: &str) -> Result<PathBuf> {
-    if let Some(template_dir) = std::env::var_os("TIME_TRACKER_TEMPLATE_DIR") {
+    if let Some(template_dir) = std::env::var_os("OMATRACKER_TEMPLATE_DIR") {
         let template = PathBuf::from(template_dir).join(format!("{template_id}.typ"));
         if template.is_file() {
             return Ok(template);
         }
         bail!("Typst template override {} is missing", template.display())
     }
-    let executable = std::env::current_exe().context("could not locate time-tracker binary")?;
+    let executable = std::env::current_exe().context("could not locate omatracker binary")?;
     let binary_dir = executable
         .parent()
-        .context("time-tracker binary has no parent directory")?;
+        .context("omatracker binary has no parent directory")?;
     let root = binary_dir
         .parent()
-        .context("time-tracker binary must be located in a bin directory")?;
+        .context("omatracker binary must be located in a bin directory")?;
     let template = root.join("templates").join(format!("{template_id}.typ"));
     if template.is_file() {
         return Ok(template);

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "id": "sophie.time-tracker",
-  "name": "TimeTracker",
-  "version": "0.3.0",
+  "id": "epgeroy.omatracker",
+  "name": "OmaTracker",
+  "version": "0.4.0",
   "author": "epgeroy",
   "license": "MIT",
   "description": "Rust-backed project time tracking with Typst reports and Google Drive sync",
@@ -12,7 +12,7 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "TimeTracker",
+    "displayName": "OmaTracker",
     "description": "Present Rust-backed project time tracking and PDF reports",
     "category": "Productivity",
     "allowMultiple": false,
@@ -22,7 +22,7 @@
         "key": "dataPath",
         "type": "string",
         "label": "Task data file",
-        "defaultValue": "~/.config/omarchy/time-tracker.json"
+        "defaultValue": "~/.config/omarchy/omatracker.json"
       }
     ]
   }
