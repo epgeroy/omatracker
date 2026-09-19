@@ -284,6 +284,22 @@ Sessions spanning rate changes are split. A missing rate is non-billable; zero i
 a real billable rate. Later rate changes do not reprice recorded entries. Backdated
 entries use the history applicable to their timestamps.
 
+For “yesterday, 20:00–23:00”, read `project.get` → `billing.timezone` and resolve
+both the date and endpoint offsets there. With local today fixed at September 19,
+2026 in `Europe/London`, the request is:
+
+```sh
+omatracker agent entry.add --input '{"id":"TASK_ID","start":"2026-09-18T20:00:00+01:00","end":"2026-09-18T23:00:00+01:00"}' --key auto
+```
+
+Inspect **every** returned `data.entries[]` segment's `billing.rate` and
+`billing.resolved`, not just the successful envelope. Unresolved time is excluded;
+resolved time with `rate: null` is non-billable; an explicit zero is billable.
+If the project rate first took effect September 19, report the three hours as
+non-billable immediately. If billing was expected and historical pricing is unclear,
+ask one focused rate/scope question; a current project/task rate is not authorization
+to retroactively price it.
+
 ### Assign a rate to an existing task
 
 Tasks inherit the project rate until explicitly overridden. A task can have its
@@ -320,6 +336,38 @@ the old running portion retains its old rate and new work uses the new policy.
 The result includes `rateChange.appliedEntryIds`, skip counts, and an audit ID.
 `entry.list` includes entry-specific `rateAdjustments` with the previous billing
 metadata. Existing drafts must be refreshed; issued invoices never change.
+
+For “make that existing work billable at USD 50/hour; edit or recreate it”, prefer
+the history-preserving rate edit. Ask only if the conversation has not already
+established the rate and historical scope. Read `task.get` for `entityRevision`,
+then paginate `entry.list` across **all dates** for its project and select by
+`entry.taskId`; `entry.list.id` is an entry ID. Check eligibility and any issued/paid
+allocations. If other eligible entries or elapsed running time fall outside the
+authorized slot, explain the task-wide mismatch before writing. `effectiveAt` does
+not restrict backfill dates, and task deletion retains dated entries. The call also
+sets the future task rate, so resolve any explicit future-policy constraint first.
+
+Once that scope is established (placeholders below are returned IDs/tokens):
+
+```sh
+omatracker agent task.rate --input '{"id":"TASK_ID","rate":"50","currency":"USD","applyExisting":true,"entityRevision":"TASK_TOKEN","reason":"User authorized pricing existing three hours"}' --key auto
+omatracker agent entry.list --input '{"project":"PROJECT_ID","from":"2026-09-18","to":"2026-09-19"}'
+omatracker agent summary --input '{"project":"PROJECT_ID","from":"2026-09-18","to":"2026-09-19"}'
+# If a draft already exists, get its current numeric revision, refresh, then preview:
+omatracker agent invoice.get --input '{"id":"DRAFT_ID"}'
+omatracker agent invoice.refresh --input '{"id":"DRAFT_ID","revision":DRAFT_REVISION}' --key auto
+omatracker agent invoice.preview --input '{"id":"DRAFT_ID"}'
+```
+
+Check `rateChange.appliedEntryIds` and `adjustmentId`, plus the **counts** in
+`rateChange.skipped` (`alreadyRated`, `invoiced`, `externallyBilled`). Identify
+specific skipped entries from entry/allocated-invoice inspection when needed; the
+response does not supply skipped IDs. Confirm preserved intervals/durations and
+updated billing/audit metadata with `entry.list`. For exactly those three hours,
+`summary.uninvoiced` should report `amountMinor: "15000"`, `amountText: "USD 150.00"`.
+`task.get` alone cannot establish a correct historical invoice. See
+`skills/omatracker/references/workflows.md` (installed: `references/workflows.md`)
+for the full decision table and correction recipe.
 
 The widget's task editor has **Use project rate**, task rate/currency fields, and
 an opt-in checkbox to price existing unrated time. Saving name, manual added time,
@@ -404,6 +452,14 @@ discount, partial-payment, or credit-note calculations are performed.
 Drafts show excluded non-billable, unresolved, already-billed time and running
 timer counts. Live timer time is not billable until stopped. Multiple currencies
 require separate invoices. Empty drafts can be inspected but cannot be issued.
+
+Before `invoice.create`, require a `summary` for that exact project/range unless
+an equivalent, still-current summary is already available. Explain the excluded
+time/running timers and resolve unexpected exclusions using established intent.
+Rerun the summary after entry, historical pricing, allocation, or range changes.
+After changing a draft's source, use `invoice.get` and `invoice.refresh` with its
+current numeric revision before previewing; `invoice.preview` does not refresh
+billing. Avoid another unchanged preview while the underlying pricing is still wrong.
 
 Monthly drafting is the default. Scheduling never issues or uploads. Repeated
 checks reuse existing drafts without silently refreshing reviewed content. Late

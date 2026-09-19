@@ -41,13 +41,23 @@ Respect a user-specified ledger using `--data-path`. No MCP server is required.
   omit its old ID. `REQUEST_TARGET_REMOVED` requires a fresh creation key.
 - **Task rates:** use `task.rate` with `id`, `rate`, and `currency` even when the
   project has no rate. Default behavior is new work only. Add `applyExisting: true`
-  only when asked to price existing unrated, uninvoiced time; explain skipped priced
-  or billed entries. `inheritRate: true` restores project inheritance; `noRate: true`
-  makes future task work non-billable. Inspect `task.get` for effective rate/history.
+  when existing unrated time is explicitly authorized for pricing; ask only when
+  the conversation has not already established the historical rate and scope.
+  Inspect all eligible task entries first: backfill is task-wide across dates,
+  including elapsed running time, not limited to a selected slot. Explain scope
+  mismatches and skipped priced/billed entries. Prefer a history-preserving edit
+  for “edit or recreate”. `task.get` describes current rate/history, not proof of
+  entry pricing. See the correction recipe in `references/workflows.md`.
+  `inheritRate: true` restores inheritance; `noRate: true` makes future work non-billable.
 - **Time:** discover/create a task, start/stop by ID. Manual entries require actual
-  dates, not a guessed current period. Subtraction targets an identified entry;
+  dates and offsets resolved in the project's timezone. Inspect every returned
+  segment's `billing.rate` and `billing.resolved`; report billable (including zero),
+  non-billable, or unresolved time accurately. A current rate does not establish
+  historical pricing. If billable work was expected and pricing is unclear, ask
+  one focused rate/scope question. Subtraction targets an identified entry;
   ask which entry/date if ambiguous. Record reasons and use revisions for corrections.
-- **Invoices:** summarize the selected range, create/refresh draft, preview PDF,
+- **Invoices:** require a project/range `summary` before creation unless an equivalent,
+  still-current summary is available; explain exclusions. Create/refresh draft, preview PDF,
   issue when requested, render, then upload when requested. Report invoice number,
   amount/currency, local PDF path, and actual upload status/destination.
 - **Recovery:** refresh stale drafts; inspect revision conflicts; retry rendering

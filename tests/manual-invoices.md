@@ -6,9 +6,10 @@ disposable ledger and configuration; no existing tracking data is changed.
 ```bash
 backend="$PWD/bin/omatracker"
 sandbox="$(mktemp -d)"
-mkdir -p "$sandbox/home" "$sandbox/config"
+mkdir -p "$sandbox/home" "$sandbox/config" "$sandbox/data" "$sandbox/cache" "$sandbox/state"
 tracker() {
   HOME="$sandbox/home" XDG_CONFIG_HOME="$sandbox/config" \
+    XDG_DATA_HOME="$sandbox/data" XDG_CACHE_HOME="$sandbox/cache" XDG_STATE_HOME="$sandbox/state" \
     "$backend" --data-path "$sandbox/ledger.json" "$@"
 }
 tracker agent help
@@ -62,6 +63,101 @@ and retain both audit records. Correct it again before continuing if needed.
 Change the rate effective after August and verify August remains USD 80/hour.
 Remove the rate, record new time, and verify it is non-billable. Set a zero rate
 and verify new work is billable at zero rather than classified as non-billable.
+
+### Historical-time intent replay
+
+Use a separate project/task in the sandbox. Fix the conversation's local “today”
+at September 19, 2026; all entry timestamps below must be in the past when replayed.
+The supplied `effectiveAt` controls rate history independently of the execution date.
+
+```bash
+tracker agent project.create --input '{"name":"Historical demo","timezone":"Europe/London","rate":"50","currency":"USD","effectiveAt":"2026-09-19T00:00:00+01:00"}' --key historical-project
+tracker agent task.create --input '{"project":"HISTORY_PROJECT_ID","title":"Yesterday demo"}' --key historical-task
+tracker agent project.get --input '{"project":"HISTORY_PROJECT_ID"}'
+tracker agent entry.add --input '{"id":"HISTORY_TASK_ID","start":"2026-09-18T20:00:00+01:00","end":"2026-09-18T23:00:00+01:00"}' --key historical-entry
+tracker agent summary --input '{"project":"HISTORY_PROJECT_ID","from":"2026-09-18","to":"2026-09-19"}'
+```
+
+Inspect every `data.entries[]` segment, including `billing.rate` and
+`billing.resolved`. Expected: 10,800 recorded seconds, `resolved: true`,
+`rate: null`; summary excludes 10,800 non-billable seconds. Even if `task.get`
+reports the current USD 50 rate, say that yesterday's time is non-billable before
+creating an invoice. For “record yesterday's work” without a billing expectation,
+no question is needed. For expected billing without a known historical rate, ask
+one focused rate/currency/scope question. After the main replay, check mixed-rate
+segments separately: on a separate project with the same rate history, add an
+interval spanning the effective date and verify both the unrated segment and the
+rated segment are reported.
+
+To exercise recovery of an existing empty draft, intentionally create one **after
+explaining these exclusions**. This is a test fixture, not a reason to create an
+empty invoice before investigating unexpected non-billable work:
+
+```bash
+tracker agent invoice.create --input '{"project":"HISTORY_PROJECT_ID","from":"2026-09-18","to":"2026-09-19","currency":"USD"}' --key historical-draft
+tracker agent task.get --input '{"id":"HISTORY_TASK_ID"}'
+tracker agent entry.list --input '{"project":"HISTORY_PROJECT_ID"}'
+```
+
+User: “Make that existing work billable at USD 50/hour; edit or recreate it.”
+Follow entry pagination and select `entry.taskId`; confirm there is no other
+eligible entry or elapsed running time outside this scope. Use the returned task
+`entityRevision` below. Do not ask for the same authorization again or delete/recreate
+the task (deleting retains its dated entries).
+
+```bash
+tracker agent task.rate --input '{"id":"HISTORY_TASK_ID","rate":"50","currency":"USD","applyExisting":true,"entityRevision":"HISTORY_TASK_TOKEN","reason":"User authorized existing three-hour slot"}' --key historical-backfill
+tracker agent entry.list --input '{"project":"HISTORY_PROJECT_ID"}'
+tracker agent summary --input '{"project":"HISTORY_PROJECT_ID","from":"2026-09-18","to":"2026-09-19"}'
+tracker agent invoice.get --input '{"id":"HISTORY_DRAFT_ID"}'
+# Replace HISTORY_DRAFT_REVISION with the numeric revision returned above.
+tracker agent invoice.refresh --input '{"id":"HISTORY_DRAFT_ID","revision":HISTORY_DRAFT_REVISION}' --key historical-refresh
+tracker agent invoice.preview --input '{"id":"HISTORY_DRAFT_ID"}'
+```
+
+Expected: `rateChange.appliedEntryIds` identifies the original entry, skipped
+counts are zero, and `adjustmentId` identifies the audit record. Entry ID, interval,
+and 10,800-second duration remain unchanged; only billing/audit metadata changes.
+The fresh summary returns `amountMinor: "15000"` and `amountText: "USD 150.00"`.
+The refreshed draft also has `totalMinor: "15000"` and its single preview shows
+USD 150.00. A preview of the unrefreshed draft would still show its old amount.
+
+Additional disposable variants:
+
+| Variant | Expected review/replay result |
+| --- | --- |
+| Explicit USD 0/hour instead of 50 | Present zero rate is billable: 10,800 billable seconds, USD 0.00, no non-billable exclusion. Later backfill skips it as `alreadyRated`. |
+| Already-priced time plus a new unrated entry | Only the unrated entry appears in `appliedEntryIds`; old historical pricing stays intact and `skipped.alreadyRated` increases. |
+| Issued or paid time; externally billed legacy time | Backfill leaves these unchanged and reports `skipped.invoiced` / `skipped.externallyBilled`; inspect invoice allocations and entry flags to identify skipped IDs. |
+| Two eligible entries on the task, only one slot authorized | Read all dates, detect both entries, explain that backfill is task-wide and ask one scope question; no rate write or preview until scope is resolved. `effectiveAt` does not narrow backfill. |
+| Unresolved legacy time | Report unresolved/excluded, not ordinary non-billable. Resolve only with explicit historical pricing/no-rate and already-billed intent. |
+| A priced draft's duration changes | On an unissued draft, use `entry.correct` with its entry revision (for example `delta: -3600`); rerun summary, get/refresh the draft revision, then preview USD 100.00 for the remaining two hours. |
+
+Record the clarification count, redundant previews, actual tool-call sequence/count
+(including pagination/retry-key calls), and result accuracy for each replay. For the
+fully authorized USD 50 correction above: target **0** repeated authorization
+questions, **0** redundant previews, one corrected preview, preserved interval and
+USD 150.00. For unclear rate or single-slot/task-wide mismatch: one focused question
+and no unauthorized write. These are scenario reviews of agent behavior, not tests
+that assert documentation wording; API replay alone does not measure a live model's
+clarification behavior.
+
+### Verify the installed recipes
+
+After `make backend`, install from the rebuilt executable into the sandbox:
+
+```bash
+tracker skill install --harness opencode --json
+skill="$sandbox/config/opencode/skills/omatracker"
+cmp skills/omatracker/references/workflows.md "$skill/references/workflows.md"
+cmp AGENT_API.md "$skill/AGENT_API.md"
+cmp tests/manual-invoices.md "$skill/tests/manual-invoices.md"
+```
+
+Read the installed `SKILL.md` and `references/installation.md`: the former includes
+the historical billing/intent guidance plus the installer's path preamble, and the
+latter pins this sandbox-tested executable. Reinstall should be a no-op. Do not use
+your real HOME/XDG skill directories for this acceptance check.
 
 ## 3. Draft, issue, render, payment, corrections
 
