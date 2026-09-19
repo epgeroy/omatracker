@@ -313,6 +313,7 @@ Panel {
 
   Service {
     id: trackerClient
+    Component.onCompleted: trackerClient.configure(root.dataFilePath)
   }
 
   IpcHandler {
@@ -329,10 +330,6 @@ Panel {
     function exportWeekly(): void { if (root.tracker) root.tracker.requestExport("weekly") }
     function exportMonthly(): void { if (root.tracker) root.tracker.requestExport("monthly") }
   }
-
-  Component.onCompleted: Qt.callLater(function() {
-    if (root.tracker) root.tracker.configure(root.dataFilePath)
-  })
 
   WidgetButton {
     id: button
@@ -448,7 +445,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "PDF template: " + (root.activeProject.templateId === "summary" ? "Summary" : "Detailed") + " (click to switch)"
+            text: "PDF template: " + (root.activeProject && root.activeProject.templateId === "summary" ? "Summary" : "Detailed") + " (click to switch)"
             color: root.mutedForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.bodySmall
@@ -456,7 +453,7 @@ Panel {
               anchors.fill: parent
               cursorShape: Qt.PointingHandCursor
               onClicked: root.tracker.updateProject(root.activeProject.id, {
-                templateId: root.activeProject.templateId === "summary" ? "detailed" : "summary"
+                templateId: root.activeProject && root.activeProject.templateId === "summary" ? "detailed" : "summary"
               })
             }
           }
@@ -467,7 +464,7 @@ Panel {
             CheckBox {
               id: weeklyReportBox
               text: "Weekly reports"
-              checked: root.activeProject.exportWeekly
+              checked: root.activeProject ? root.activeProject.exportWeekly : true
               onToggled: if (root.tracker && root.activeProject)
                 root.tracker.updateProject(root.activeProject.id, { exportWeekly: checked })
             }
@@ -475,7 +472,7 @@ Panel {
             CheckBox {
               id: monthlyReportBox
               text: "Monthly reports"
-              checked: root.activeProject.exportMonthly
+              checked: root.activeProject ? root.activeProject.exportMonthly : true
               onToggled: if (root.tracker && root.activeProject)
                 root.tracker.updateProject(root.activeProject.id, { exportMonthly: checked })
             }
