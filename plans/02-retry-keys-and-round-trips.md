@@ -1,6 +1,7 @@
 # Plan 02: Retry keys and model round trips
 
-Status: Proposed. Priority: P1. Skill improvements followed by a small CLI extension.
+Status: Phases A/B implemented; Phase C contract defined, runtime deferred to Plan 03.
+Priority: P1. Skill improvements followed by a small CLI extension.
 
 ## Goal and evidence
 
@@ -53,16 +54,23 @@ does not replace ledger receipts or claim multi-command atomicity.
 
 ## Implementation steps
 
-- [ ] Document grouped preparation and dependency-aware execution in the skill.
-- [ ] Inspect `src/agent.rs` key generation, request parsing, receipt lookup, and
+- [x] Document grouped preparation and dependency-aware execution in the skill.
+- [x] Inspect `src/agent.rs` key generation, request parsing, receipt lookup, and
   `--key auto` behavior; capture current guarantees in focused regression cases.
-- [ ] Add `request.keys`, validation, help advertisement, and request/response docs.
-- [ ] Return compact labeled results rather than repeating full request metadata.
-- [ ] Define the reusable journal format with Plan 03, including versioning,
+- [x] Add `request.keys`, validation, help advertisement, and request/response docs.
+- [x] Return compact labeled results rather than repeating full request metadata.
+- [x] Define the reusable journal format with Plan 03, including versioning,
   same-ledger resume checks, persistence ordering, and changed-input rejection.
 - [ ] Implement journal support alongside its first real workflow consumer in
   Plan 03, avoiding an unused generic execution framework.
-- [ ] Update embedded skill references and isolated installation coverage.
+- [x] Update embedded skill references and isolated installation coverage.
+
+The Phase C contract is in [workflow-journal.md](workflow-journal.md). Its runtime
+acceptance criteria (interrupted journal update, changed-input and wrong-ledger
+resume) are deferred to the Plan 03 consumer. Review found that existing storage
+has no persistent ledger-incarnation identity and `atomic_write` does not sync the
+parent directory; the contract records both prerequisites rather than claiming
+durable workflow recovery from key generation alone.
 
 ## Files and integration points
 
@@ -95,6 +103,11 @@ CLI calls; grouped execution does not make internal work disappear.
 Run targeted retry/invoice/lifecycle tests and new key/journal tests, followed by
 `cargo fmt --check` and the project's applicable Rust checks. Use fake external
 services and disposable ledgers for recovery tests.
+
+Implementation verification: focused key/invoice/lifecycle/installed-skill tests
+and the full `make check` passed (Rust tests, formatting, Clippy with warnings
+denied, Typst templates, plugin validation, QML service/UI and isolated installation
+checks). The headless UI suite skips its existing Wayland-only popup case.
 
 ## Dependencies and implementation preflight
 

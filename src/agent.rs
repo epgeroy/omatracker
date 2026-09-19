@@ -11,6 +11,7 @@ use std::process::Command;
 pub const ACTIONS: &[&str] = &[
     "help",
     "request.key",
+    "request.keys",
     "data.clear",
     "context",
     "issuer.get",
@@ -136,6 +137,50 @@ pub struct Input {
     pub add: Option<String>,
     pub dry_run: bool,
     pub include_drive: bool,
+}
+
+const MAX_REQUEST_KEYS: usize = 64;
+const MAX_KEY_LABEL_BYTES: usize = 80;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyBatch {
+    labels: Vec<String>,
+}
+
+fn request_keys(input: Value, key: Option<&str>) -> Result<Value> {
+    if key.is_some() {
+        bail!(
+            "INVALID_INPUT: request.keys does not accept a retry key; it generates fresh keys without receipts"
+        )
+    }
+    let batch: KeyBatch =
+        serde_json::from_value(input).context("INVALID_INPUT: expected an object with labels")?;
+    if batch.labels.is_empty() || batch.labels.len() > MAX_REQUEST_KEYS {
+        bail!("INVALID_INPUT: labels must contain 1–{MAX_REQUEST_KEYS} items")
+    }
+    let mut seen = std::collections::HashSet::new();
+    for label in &batch.labels {
+        if label.is_empty()
+            || label.len() > MAX_KEY_LABEL_BYTES
+            || label.trim() != label
+            || label.chars().any(char::is_control)
+        {
+            bail!(
+                "INVALID_INPUT: labels must be 1–{MAX_KEY_LABEL_BYTES} UTF-8 bytes without surrounding whitespace or control characters"
+            )
+        }
+        if !seen.insert(label) {
+            bail!("INVALID_INPUT: labels must be unique")
+        }
+    }
+    // Validate the whole batch before generation. This path never touches a ledger.
+    let keys: serde_json::Map<String, Value> = batch
+        .labels
+        .into_iter()
+        .map(|label| (label, json!(crate::make_id("request"))))
+        .collect();
+    Ok(json!({"schemaVersion":1,"ok":true,"changed":false,"data":{"keys":keys}}))
 }
 
 fn required(value: &Option<String>, name: &str) -> Result<String> {
@@ -1071,11 +1116,15 @@ pub fn execute(path: &Path, action: &str, input: Value, key: Option<&str>) -> Re
             "actions":ACTIONS,"request":"agent ACTION --input JSON [--key RETRY_KEY]",
             "contract":"AGENT_API.md","dates":"YYYY-MM-DD; to is exclusive; timestamps RFC3339 with offset",
             "invoiceStates":["draft","issued","paid","void"],"money":"integer minor-unit totals encoded as strings",
-            "mutations":"Use agent request.key or --key auto for each NEW operation; reuse a resolved key only for exact retries. Prefer entityRevision for task/project/client edits; entries/invoices use revision."
+            "mutations":"Prepare independent keys together with agent request.keys (or request.key / --key auto for one NEW operation); reuse a resolved key only for exact retries. Prefer entityRevision for task/project/client edits; entries/invoices use revision.",
+            "requestKeys":{"input":{"labels":["create-task","add-entry","price-entry"]},"maxItems":MAX_REQUEST_KEYS,"maxLabelBytes":MAX_KEY_LABEL_BYTES,"labels":"unique, nonempty UTF-8; no surrounding whitespace or control characters","result":"data.keys maps each label to a fresh key; no ledger access or retry-key argument"}
         }}));
     }
     if !ACTIONS.contains(&action) {
         bail!("UNKNOWN_ACTION: run agent help")
+    }
+    if action == "request.keys" {
+        return request_keys(input, key);
     }
     let args: Input =
         serde_json::from_value(input.clone()).context("INVALID_INPUT: malformed request")?;

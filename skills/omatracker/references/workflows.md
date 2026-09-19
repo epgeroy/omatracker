@@ -3,6 +3,40 @@
 Read `AGENT_API.md` in the OmaTracker installation for the complete field contract.
 All commands below are `bin/omatracker agent ACTION --input JSON`.
 
+## Prepare keys together, execute dependencies in order
+
+Use `request.keys` with `{"labels":["invoice:create","invoice:issue","invoice:render","invoice:upload"]}`
+to prepare all four keys in one call. The response is a label-to-key mapping at
+`data.keys`. Labels must be unique, 1–80 UTF-8 bytes, without surrounding whitespace
+or control characters; a batch contains 1–64 labels. Preserve labels exactly.
+Each invocation returns fresh keys and does not access a ledger; omit `--key`.
+
+Allocate keys for later steps now, even if an earlier mutation must return their
+target ID. For six dated tasks, prepare 18 labels in one batch: `task-1:create`,
+`task-1:add-entry`, `task-1:price-entry`, and the same three labels for tasks 2–6.
+Do not wait for each create/add/price stage just to generate its next keys. Collect
+independent discovery results (project, issuer, client, range summary) in the same
+tool round as preparation. If help advertises only `request.key`, group those
+independent calls in one round instead.
+
+Retain the selected ledger, step-to-key mapping, and each exact action/input before
+starting writes. Use the create key for create, validate its returned ID, then resolve
+and retain the entry input with that ID before using the entry key. Validate billing
+metadata and revisions before the dependent pricing step. Key preparation may be
+grouped; mutations with dependencies must still wait for validated results.
+
+If generation was interrupted and none of its keys has been used, prepare again.
+After any write starts, replay uncertain steps with their original resolved key and
+exact input; do not rerun `request.keys` or `--key auto` to replace those keys. An
+idempotency conflict means the request changed; inspect it rather than silently
+starting another write. A retained key is not enough if the original arguments were
+lost. Automated durable recovery belongs to the workflow journal in Plan 03, which
+must be persisted before the first mutation; it does not make a batch atomic.
+
+For invoices this reduces four dedicated preparation rounds to at most one; for six
+tasks it reduces three six-call generation stages to one batch call. Report model
+rounds separately from internal CLI calls: the underlying writes still run.
+
 ## New client and project
 
 1. `issuer.get`; use `issuer.set` with complete `details` to record sender name,
@@ -35,7 +69,7 @@ requested. Do not cascade-delete projects merely to remove a client. List archiv
 with `includeArchived: true`. Issued invoice names and original task-entry titles
 remain captured; refresh drafts when current billing metadata changes.
 
-Generate a fresh `agent request.key` before each new write and retain it for retries.
+Prepare fresh keys together with `agent request.keys` and retain each for retries.
 Do not reuse creation keys after deleting an entity. Recreate clients without the
 old ID; use the new returned ID in new projects. If a creation key returns
 `REQUEST_TARGET_REMOVED`, use a new key for the new intended creation. `--key auto`
@@ -139,6 +173,9 @@ the intended entry, and send `entry.correct` with signed seconds, revision, reas
 Use the returned correction ID with `entry.undo` and the current entry revision.
 
 ## Invoice preparation
+
+Prepare create/issue/render/upload keys together as described above; use each only
+when its step is requested and its dependencies have been validated.
 
 1. Require `summary` for the exact project/from/to before creating an invoice,
    unless an equivalent, still-current summary is already available. `to` is

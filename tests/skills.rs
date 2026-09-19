@@ -5,6 +5,38 @@ use std::process::{Command, Output};
 
 struct Sandbox(tempfile::TempDir);
 
+#[test]
+fn installed_retry_guidance_matches_the_embedded_batch_key_contract() {
+    let sandbox = Sandbox::new();
+    sandbox.run(&["skill", "install", "--harness", "opencode", "--json"]);
+    let root = sandbox.root().join("config/opencode/skills/omatracker");
+    for (file, source) in [
+        ("SKILL.md", include_str!("../skills/omatracker/SKILL.md")),
+        ("AGENT_API.md", include_str!("../AGENT_API.md")),
+        (
+            "references/workflows.md",
+            include_str!("../skills/omatracker/references/workflows.md"),
+        ),
+    ] {
+        let installed = fs::read_to_string(root.join(file)).unwrap();
+        if file == "SKILL.md" {
+            // Installation prepends executable-path guidance to the skill body.
+            assert!(installed.ends_with(source.split_once("# OmaTracker\n").unwrap().1));
+        } else {
+            assert_eq!(installed, source);
+        }
+        assert!(installed.contains("request.keys"));
+    }
+    let response = sandbox.run(&[
+        "agent",
+        "request.keys",
+        "--input",
+        r#"{"labels":["create-task","add-entry","price-entry"]}"#,
+    ]);
+    assert_eq!(response["data"]["keys"].as_object().unwrap().len(), 3);
+    assert!(!sandbox.root().join("must-not-open").exists());
+}
+
 impl Sandbox {
     fn new() -> Self {
         Self(tempfile::tempdir().unwrap())

@@ -107,6 +107,10 @@ Do not promise an elapsed-time speedup solely from fewer calls.
 
 ## Dependencies and implementation preflight
 
+The shared recovery contract is [workflow-journal.md](workflow-journal.md), including
+schema versioning, ledger identity, input fingerprints, persistence ordering and
+uncertain-step replay. Implement and test it alongside this first consumer.
+
 Depends on [Plan 01](01-historical-time-and-intent-handling.md) for pricing intent
 and [Plan 02](02-retry-keys-and-round-trips.md) for durable workflow recovery.
 Coordinate discoverability with [Plan 04](04-operational-documentation-and-discovery.md).

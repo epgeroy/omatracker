@@ -14,11 +14,17 @@ Respect a user-specified ledger using `--data-path`. No MCP server is required.
    project or `repository.resolve`; never change the panel selection to target work.
 3. Send JSON with `agent ACTION --input-file -` or `--input`. Parse `ok`, `data`,
    `error.code`, and pagination. Use the returned IDs and revisions.
-4. Before each new logical write, generate and retain a key with `agent request.key`.
-   Pass it using `--key`, reusing it only for an exact retry. Never reuse a key merely
-   because an entity has the same name, especially after deletion/recreation.
-   Interactive `--key auto` prints/returns a new key; retry with the resolved key,
-   not `auto`. Render/upload accept keys too.
+4. Prepare independent keys together with `agent request.keys --input
+   '{"labels":["create-task","add-entry","price-entry"]}'` (1–64 unique labels,
+   each 1–80 UTF-8 bytes without surrounding whitespace/control characters).
+   Retain `data.keys` by logical step, including known later steps whose IDs are not
+   yet available. Combine preparation with independent discovery in the same tool
+   round. On older installations, group independent `request.key` calls together.
+   Persist keys before writes; pass each using `--key`, reusing it and its exact
+   arguments only for a retry. Validate results before dependent mutations.
+   Never reuse keys merely because an entity has the same name, especially after
+   deletion/recreation. `--key auto` prints/returns a new key; retry with the resolved
+   key, not `auto`. Render/upload accept keys too. See `references/workflows.md`.
 5. Keep outputs focused: query a project/date range, request summaries, and follow
    pagination. Rust calculates amounts; do not recompute money in the model.
 

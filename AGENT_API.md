@@ -119,15 +119,16 @@ Quit and restart OpenCode after removal; restart/reload skills in other harnesse
 - Use `--key` for retry-safe ledger writes, especially creation, manual entries,
   corrections, and issuance. Identical retries replay the original response;
   different arguments with the same key return `IDEMPOTENCY_CONFLICT`.
-- Generate a fresh key with `agent request.key` **before each new logical operation**.
-  Store it, then pass it with `--key`; reuse it only for an exact retry. Keys identify
+- Prepare fresh keys together with `agent request.keys` (or `request.key` for one)
+  **before new logical operations**. Store each key with its logical step, then pass
+  it with `--key`; reuse it only for an exact retry. Keys identify
   requests, not clients/projects or names. Deleting then recreating an entity requires
   a new key and produces a new ID. Replaying a creation whose entity was removed
   returns `REQUEST_TARGET_REMOVED` instead of handing back an obsolete ID.
 - For interactive convenience, `--key auto` generates a fresh key per invocation,
   prints it to stderr before executing, and includes `requestKey` in the successful
   JSON response. Retry with that resolved key, **not** `auto`, to avoid creating a
-  second operation. Agents should prefer `request.key` so they know the key before
+  second operation. Agents should prefer `request.keys` so they know the keys before
   starting a write. Successful keyed responses include `requestKey`.
 - Render/upload also support durable retry keys. After interruption, an upload
   retries the same pinned destination with `rclone copyto --checksum`.
@@ -144,6 +145,49 @@ Quit and restart OpenCode after removal; restart/reload skills in other harnesse
   `REVISION_CONFLICT` and `STALE_DRAFT` mean inspect/refresh the specific target.
 - Ledger changes and retry receipts are committed under one advisory lock. External
   rendering/uploads use separate worker locks so timers remain responsive.
+
+### Grouped retry-key preparation
+
+```sh
+bin/omatracker agent request.keys --input '{"labels":["invoice:create","invoice:issue","invoice:render","invoice:upload"]}'
+```
+
+Response (key values shown as placeholders):
+
+```json
+{"schemaVersion":1,"ok":true,"changed":false,"data":{"keys":{"invoice:create":"request-<uuid-1>","invoice:issue":"request-<uuid-2>","invoice:render":"request-<uuid-3>","invoice:upload":"request-<uuid-4>"}}}
+```
+
+`request.keys` accepts only an object containing `labels`; `--input-file` and stdin
+work as for other actions. Labels are case-sensitive and returned exactly, without
+trimming or Unicode normalization. Empty batches, duplicates, invalid labels/types,
+extra fields, more than 64 labels, or a `--key` argument return `INVALID_INPUT`.
+The mapping is compact: one string per label, with no per-item request metadata.
+Do not rely on object ordering. Every invocation generates fresh keys, including
+when labels repeat across calls. Labels associate keys with steps; they are not
+idempotency keys themselves. `request.key` retains its existing `data.key` response.
+
+Both key actions avoid reading, creating, migrating, or locking the selected ledger.
+They do not save keys or receipts. If generation is interrupted **before any write
+uses the keys**, it can be repeated. Once a write starts, retain and reuse its original
+resolved key, action, and exact input (including IDs and revisions), even if the
+response is lost. Do not reconstruct the input with different defaults or substitute
+fresh keys to resolve uncertainty. `--key auto` is only a new-operation convenience.
+
+Prepare labels for later dependent steps as soon as their logical identity is known;
+an invoice ID need not exist to allocate its issue/render/upload keys. Independent
+discovery reads and key preparation can share a tool round. Validate each mutation's
+response before resolving arguments and revisions for the next dependent mutation.
+An invoice sequence needs at most one dedicated key-preparation round, rather than
+four. Six tasks with create/add-entry/price-entry steps can prepare all 18 keys in
+one call (e.g. `task-1:create`, `task-1:add-entry`, `task-1:price-entry`, through task 6).
+This removes key-generation model turns; it does not batch or eliminate the writes.
+
+Durable multi-step workflow execution is specified for Plan 03 in the source
+repository's `plans/workflow-journal.md` (a development plan, not an installed skill
+reference); `request.keys` alone is not a workflow executor or
+durable journal. The journal implementation and interruption/resume tests ship with
+that first consumer, not with key generation.
 
 ## Operations
 
@@ -233,6 +277,7 @@ Fields below are inside the `--input` object. Optional fields are in parentheses
 | `help` | `{}` — operation names and basic conventions |
 | `data.clear` | (`dryRun: true`, `includeDrive: true`); full reset, only on explicit user request |
 | `request.key` | `{}` — generate a fresh retry key without opening a ledger |
+| `request.keys` | `labels`: 1–64 unique strings, each 1–80 UTF-8 bytes, no surrounding whitespace/control characters; returns `data.keys` without opening a ledger |
 | `context` | `{}` — projects, running timers, draft summaries, ledger revision |
 | `doctor` | `{}` — tool availability/versions, scheduler diagnostics, setup instructions |
 | `issuer.get` | `{}` |
