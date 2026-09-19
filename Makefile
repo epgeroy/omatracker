@@ -17,12 +17,11 @@ qml-check:
 	trap 'rm -rf "$$temporary"' EXIT; \
 	OMATRACKER_TEST_DIR="$$temporary" QT_QPA_PLATFORM=offscreen \
 	  timeout 15 quickshell --no-color --path ServiceTest.qml && \
-	  test -f "$$temporary/passed"
+	  test -f "$$temporary/passed" && \
+	  OMATRACKER_TEST_DIR="$$temporary" QT_QPA_PLATFORM=offscreen \
+	  timeout 15 quickshell --no-color --path TemplateServiceTest.qml && \
+	  test -f "$$temporary/templates-passed"
 
 template-check:
-	@if command -v typst >/dev/null; then \
-		typst compile --root . tests/validate-detailed.typ target/template-detailed.pdf; \
-		typst compile --root . tests/validate-summary.typ target/template-summary.pdf; \
-	else \
-		printf '%s\n' "Typst unavailable; skipping template compilation"; \
-	fi
+	typst compile --root . tests/validate-detailed.typ target/template-detailed.pdf
+	typst compile --root . tests/validate-summary.typ target/template-summary.pdf

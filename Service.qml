@@ -36,6 +36,9 @@ Item {
   property string backendError: ""
   property bool startupHandled: false
   property bool diagnosticsReady: false
+  property var templates: []
+  property string templateError: ""
+  property string templateStatus: ""
 
   readonly property bool busy: foregroundQueue.busy || backgroundQueue.busy
   readonly property bool anyRunning: runningTimers > 0
@@ -101,6 +104,7 @@ Item {
 
   function enqueue(action, args, context) {
     var background = action === "sync" || action === "diagnostics" || action.indexOf("report-") === 0
+      || action === "template-preview" || action === "template-validate"
     var queue = background ? backgroundQueue : foregroundQueue
     queue.enqueue(action, args, context)
   }
@@ -111,7 +115,27 @@ Item {
   }
 
   function handleProcess(action, context, exitCode, stdout, stderr) {
-    if (action === "status") {
+    if (action.indexOf("template-") === 0) {
+      if (exitCode !== 0) {
+        templateError = String(stderr || stdout || "Template command failed").trim()
+        templateStatus = ""
+        return
+      }
+      try {
+        templateError = ""
+        if (action === "template-list") templates = JSON.parse(stdout)
+        else if (action === "template-create") {
+          var created = JSON.parse(stdout)
+          updateProject(context.projectId, { templateId: created.id })
+          refreshTemplates()
+          openTemplateFile(created.path)
+          templateStatus = "Created " + created.id
+        } else if (action === "template-preview" || action === "template-path") {
+          openTemplateFile(String(stdout).trim())
+          templateStatus = action === "template-preview" ? "Preview opened (saved project settings)" : "Template opened"
+        } else templateStatus = String(stdout).trim()
+      } catch (error) { templateError = "Could not read template response: " + error }
+    } else if (action === "status") {
       if (exitCode === 0) applyStatus(stdout)
       else applyBackendError(outputSummary(stdout, stderr))
     } else if (action === "diagnostics") {
@@ -119,6 +143,10 @@ Item {
       else setupStatus = outputSummary(stdout, stderr) || "Could not check OmaTracker setup"
     } else {
       if (exitCode !== 0) backendError = outputSummary(stdout, stderr) || "OmaTracker command failed"
+      if (action === "project-update") {
+        templateError = exitCode !== 0 ? String(stderr || stdout || "Could not save project settings").trim() : ""
+        templateStatus = exitCode === 0 ? "Project settings saved" : ""
+      }
       refresh()
       if (action === "report-timer") enqueue("diagnostics", ["diagnostics"], { checkReports: true })
     }
@@ -199,9 +227,36 @@ Item {
     if (changes.clientName !== undefined) args.push("--client-name", String(changes.clientName))
     if (changes.companyName !== undefined) args.push("--company-name", String(changes.companyName))
     if (changes.templateId !== undefined) args.push("--template-id", String(changes.templateId))
+    if (changes.accentColor !== undefined) args.push("--accent-color", String(changes.accentColor))
+    if (changes.paper !== undefined) args.push("--paper", String(changes.paper))
+    if (changes.logoPath !== undefined) args.push("--logo-path", String(changes.logoPath))
     if (changes.exportWeekly !== undefined) args.push("--export-weekly", String(changes.exportWeekly))
     if (changes.exportMonthly !== undefined) args.push("--export-monthly", String(changes.exportMonthly))
     enqueue("project-update", args, {})
+  }
+
+  function refreshTemplates() {
+    enqueue("template-list", ["template", "list", "--json"], {})
+  }
+
+  function createTemplate(name, from, projectId) {
+    templateError = ""
+    enqueue("template-create", ["template", "create", name, "--from", from], { projectId: projectId })
+  }
+
+  function previewTemplate(id, projectId) {
+    templateError = ""
+    templateStatus = "Generating preview…"
+    enqueue("template-preview", ["template", "preview", id, "--project", projectId], {})
+  }
+
+  function editTemplate(id) {
+    enqueue("template-path", ["template", "path", id], {})
+  }
+
+  function openTemplateFile(path) {
+    var url = "file://" + path.split("/").map(function(part) { return encodeURIComponent(part) }).join("/")
+    if (!Qt.openUrlExternally(url)) templateError = "Could not open " + path
   }
 
   function addTask() {

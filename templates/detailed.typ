@@ -8,6 +8,11 @@
   set text(size: 9pt)
   set par(leading: 0.65em)
 
+  if data.project.at("logoPath", default: "") != "" {
+    image(data.project.logoPath, width: 28mm)
+    v(8pt)
+  }
+
   align(left)[
     #text(size: 20pt, weight: "bold", fill: accent)[#data.project.name]
     #v(3pt)

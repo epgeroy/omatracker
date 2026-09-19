@@ -11,6 +11,8 @@ use std::process::Command;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
+pub mod templates;
+
 pub const STATE_VERSION: u32 = 2;
 pub const DEFAULT_PROJECT_ID: &str = "project-unassigned";
 
@@ -89,6 +91,8 @@ pub struct Report {
     pub last_error: String,
     // A successful render survives upload failures. Older ledgers default to false.
     pub rendered: bool,
+    // Empty for old ledgers; captured lazily on their next render.
+    pub template_bundle: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -229,6 +233,9 @@ pub struct ProjectChanges {
     pub client_name: Option<String>,
     pub company_name: Option<String>,
     pub template_id: Option<String>,
+    pub accent_color: Option<String>,
+    pub paper: Option<String>,
+    pub logo_path: Option<String>,
     pub export_weekly: Option<bool>,
     pub export_monthly: Option<bool>,
 }
@@ -426,12 +433,11 @@ fn normalize_project(project: &mut Project) {
     if project.name.is_empty() {
         project.name = "Untitled project".to_owned();
     }
-    if project.template_id != "summary" {
+    if !templates::valid_id(&project.template_id) {
         project.template_id = "detailed".to_owned();
     }
     project.client_name = sanitize_text(&project.client_name, 120);
     project.company_name = sanitize_text(&project.company_name, 120);
-    project.logo_path = sanitize_text(&project.logo_path, 400);
     if !is_color(&project.accent_color) {
         project.accent_color = "#476a89".to_owned();
     }
@@ -514,11 +520,9 @@ fn normalize_state(state: &mut State) {
         } else {
             "weekly".to_owned()
         };
-        report.template_id = if report.template_id == "summary" {
-            "summary".to_owned()
-        } else {
-            "detailed".to_owned()
-        };
+        if !templates::valid_id(&report.template_id) {
+            report.template_id = "detailed".to_owned();
+        }
         if !["pending", "rendering", "uploading", "complete", "failed"]
             .contains(&report.status.as_str())
         {
@@ -913,6 +917,45 @@ pub fn select_project(path: &Path, id: &str) -> Result<()> {
 }
 
 pub fn update_project(path: &Path, id: &str, changes: ProjectChanges) -> Result<()> {
+    if let Some(template_id) = &changes.template_id {
+        template_path(template_id)?;
+    }
+    if let Some(color) = &changes.accent_color
+        && !is_color(color)
+    {
+        bail!("accent color must be a six-digit hex color such as #476a89")
+    }
+    if let Some(paper) = &changes.paper
+        && !matches!(paper.as_str(), "a4" | "letter")
+    {
+        bail!("paper must be a4 or letter")
+    }
+    let logo_path = changes
+        .logo_path
+        .map(|logo| -> Result<String> {
+            if logo.is_empty() {
+                return Ok(logo);
+            }
+            let logo = if let Some(relative) = logo.strip_prefix("~/") {
+                home_dir()?.join(relative)
+            } else {
+                PathBuf::from(logo)
+            };
+            let logo = logo.canonicalize().context("logo file does not exist")?;
+            if !logo.is_file() {
+                bail!("logo must be a file")
+            }
+            let extension = logo
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "svg" | "gif") {
+                bail!("logo must be a PNG, JPEG, SVG, or GIF image")
+            }
+            Ok(logo.display().to_string())
+        })
+        .transpose()?;
     mutate_state(path, |state| {
         let project = state
             .projects
@@ -931,6 +974,15 @@ pub fn update_project(path: &Path, id: &str, changes: ProjectChanges) -> Result<
         }
         if let Some(template_id) = changes.template_id {
             project.template_id = template_id;
+        }
+        if let Some(color) = changes.accent_color {
+            project.accent_color = color;
+        }
+        if let Some(paper) = changes.paper {
+            project.paper = paper;
+        }
+        if let Some(logo) = logo_path {
+            project.logo_path = logo;
         }
         if let Some(export_weekly) = changes.export_weekly {
             project.export_weekly = export_weekly;
@@ -1406,13 +1458,15 @@ fn queue_report(
     let cache = cache_path()?;
     fs::create_dir_all(&cache).with_context(|| format!("could not create {}", cache.display()))?;
     let safe_key = safe_key(&key);
-    let data_path = cache.join(format!("{safe_key}.json"));
-    let typ_path = cache.join(format!("{safe_key}.typ"));
+    let bundle = cache.join(format!("{safe_key}-{}", Uuid::new_v4()));
+    templates::capture(
+        &project.template_id,
+        &serde_json::to_value(&snapshot)?,
+        &bundle,
+    )?;
+    let data_path = bundle.join("data.json");
+    let typ_path = bundle.join("report.typ");
     let pdf_path = cache.join(format!("{safe_key}.pdf"));
-    let snapshot = serde_json::to_string_pretty(&snapshot)
-        .context("could not serialize report snapshot")?
-        + "\n";
-    atomic_write(&data_path, snapshot.as_bytes())?;
     state.reports.push(Report {
         key: key.clone(),
         project_id: project.id.clone(),
@@ -1431,6 +1485,7 @@ fn queue_report(
         attempts: 0,
         last_error: String::new(),
         rendered: false,
+        template_bundle: bundle.display().to_string(),
     });
     known_keys.insert(key.clone());
     Ok(Some(key))
@@ -1686,37 +1741,26 @@ fn ensure_rendered(report: &Report) -> Result<()> {
 }
 
 fn render_report(report: &Report) -> Result<()> {
-    if !command_available("typst") {
-        bail!("Typst is not installed")
+    let bundle = if report.template_bundle.is_empty() {
+        // Legacy reports keep their existing PDF; if it needs rebuilding, pin
+        // the currently available source once, under the report worker lock.
+        let bundle = PathBuf::from(&report.typ_path).with_extension("bundle");
+        if !bundle.exists() {
+            let data = fs::read(&report.data_path).context("report snapshot is missing")?;
+            templates::capture(
+                &report.template_id,
+                &serde_json::from_slice(&data)?,
+                &bundle,
+            )?;
+        }
+        bundle
+    } else {
+        PathBuf::from(&report.template_bundle)
+    };
+    if !bundle.join("manifest.json").is_file() {
+        bail!("captured report template is missing: {}", bundle.display())
     }
-    let template = template_path(&report.template_id)?;
-    let data_path = PathBuf::from(&report.data_path);
-    if !data_path.is_file() {
-        bail!("report snapshot {} is missing", data_path.display())
-    }
-    let typ_path = PathBuf::from(&report.typ_path);
-    let pdf_path = PathBuf::from(&report.pdf_path);
-    let home = home_dir()?;
-    let source = format!(
-        "#import {}: render\n#render(json({}))\n",
-        typst_string(&typst_root_path(&template, &home)),
-        typst_string(&typst_root_path(&data_path, &home)),
-    );
-    atomic_write(&typ_path, source.as_bytes())?;
-    run_command(
-        "typst",
-        [
-            "compile".to_owned(),
-            "--root".to_owned(),
-            home.display().to_string(),
-            typ_path.display().to_string(),
-            pdf_path.display().to_string(),
-        ],
-    )?;
-    if !pdf_path.is_file() {
-        bail!("Typst completed without creating {}", pdf_path.display())
-    }
-    Ok(())
+    templates::compile(&bundle, Path::new(&report.pdf_path))
 }
 
 fn upload_report(path: &Path, report: &Report, drive: &Drive) -> Result<()> {
@@ -1911,6 +1955,12 @@ fn report_timer_state(path: &Path) -> (bool, bool) {
 }
 
 fn template_path(template_id: &str) -> Result<PathBuf> {
+    if !templates::valid_id(template_id) {
+        bail!("invalid template ID: {template_id}")
+    }
+    if template_id.starts_with("user:") {
+        return templates::user_path(template_id);
+    }
     if let Some(template_dir) = std::env::var_os("OMATRACKER_TEMPLATE_DIR") {
         let template = PathBuf::from(template_dir).join(format!("{template_id}.typ"));
         if template.is_file() {
@@ -2193,8 +2243,7 @@ mod tests {
 
     #[test]
     fn aggregated_totals_preserve_resets_running_time_and_legacy_seconds() {
-        let mut state = State::default();
-        state.tasks = vec![
+        let tasks = vec![
             Task {
                 id: "reset".into(),
                 project_id: DEFAULT_PROJECT_ID.into(),
@@ -2211,7 +2260,7 @@ mod tests {
                 ..Task::default()
             },
         ];
-        state.entries = vec![
+        let entries = vec![
             Entry {
                 task_id: "reset".into(),
                 started_at: 1000,
@@ -2234,6 +2283,11 @@ mod tests {
                 ..Entry::default()
             },
         ];
+        let state = State {
+            tasks,
+            entries,
+            ..State::default()
+        };
         let presentation = build_presentation_status(&state, 9500);
         assert_eq!(presentation.active_tasks[0].display_seconds, 6);
         assert_eq!(presentation.active_project_seconds, 6);

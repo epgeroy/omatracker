@@ -7,6 +7,11 @@
   )
   set text(size: 10pt)
 
+  if data.project.at("logoPath", default: "") != "" {
+    align(center, image(data.project.logoPath, width: 28mm))
+    v(8pt)
+  }
+
   align(center)[
     #text(size: 10pt, fill: accent, weight: "bold")[TIME REPORT]
     #v(8pt)

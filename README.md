@@ -107,7 +107,10 @@ are opt-in:
 sudo pacman -S typst rclone
 ```
 
-- **Typst** is invoked as `typst compile` against the bundled local templates.
+- **Typst** is invoked as `typst compile` against captured local templates.
+  Use the bundled layouts or create your own through **Project settings → PDF →
+  Customize**. See [Custom PDF templates](TEMPLATES.md) for editing, CLI commands,
+  the data contract, and a manual testing walkthrough.
 - **rclone** is invoked only as `rclone copyto --checksum`; OmaTracker never
   runs destructive remote synchronization or deletes remote files.
 - rclone owns Google OAuth tokens. OmaTracker stores neither OAuth credentials
@@ -122,7 +125,10 @@ bin/omatracker drive update --remote omatracker --folder OmaTracker --sync-on-st
 
 Report snapshots, generated Typst sources, and PDFs live in
 `~/.cache/omarchy/omatracker/` until uploaded. Reports are immutable snapshots
-of the project metadata, selected template, and time entries at queue time.
+of the project metadata, selected template source, local assets, logo, and time
+entries at queue time. Template edits affect newly queued reports; retries reuse
+the captured bundle. Existing rendered reports keep their PDFs. Older unrendered
+reports capture the available template on their next render.
 Upload retries reuse a successfully rendered PDF; a missing PDF is rendered
 again. A per-ledger worker lock prevents a retry from resetting an export that
 another process is still handling.

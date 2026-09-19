@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls as Controls
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -27,6 +28,7 @@ Panel {
   readonly property var projects: trackerState.projects || []
   property bool projectsVisible: false
   property bool settingsVisible: false
+  property bool templateSettingsVisible: false
   // Status responses deserialize a new project object each time. Track its id
   // so a refresh of the current project cannot erase an in-progress edit.
   property string settingsProjectId: ""
@@ -117,6 +119,9 @@ Panel {
     projectNameField.text = root.activeProject.name
     clientNameField.text = root.activeProject.clientName
     companyNameField.text = root.activeProject.companyName
+    accentColorField.text = root.activeProject.accentColor
+    logoPathField.text = root.activeProject.logoPath
+    paperSelector.currentIndex = root.activeProject.paper === "letter" ? 1 : 0
     weeklyReportBox.checked = root.activeProject.exportWeekly
     monthlyReportBox.checked = root.activeProject.exportMonthly
     driveRemoteField.text = root.trackerState.drive.remote
@@ -125,7 +130,10 @@ Panel {
 
   function toggleProjects() {
     root.projectsVisible = !root.projectsVisible
-    if (root.projectsVisible) Qt.callLater(root.seedSettingsFields)
+    if (root.projectsVisible) {
+      Qt.callLater(root.seedSettingsFields)
+      root.tracker.refreshTemplates()
+    }
   }
 
   function saveProjectSettings() {
@@ -133,7 +141,10 @@ Panel {
     root.tracker.updateProject(root.activeProject.id, {
       name: projectNameField.text,
       clientName: clientNameField.text,
-      companyName: companyNameField.text
+      companyName: companyNameField.text,
+      accentColor: accentColorField.text,
+      paper: paperSelector.currentIndex === 1 ? "letter" : "a4",
+      logoPath: logoPathField.text
     })
     root.tracker.updateDrive(driveRemoteField.text, driveFolderField.text, startupSyncBox.checked)
   }
@@ -451,18 +462,112 @@ Panel {
             font.family: root.contentFontFamily
           }
 
-          Text {
+          Controls.Button {
             width: parent.width
-            text: "PDF template: " + (root.activeProject && root.activeProject.templateId === "summary" ? "Summary" : "Detailed") + " (click to switch)"
-            color: root.mutedForeground
-            font.family: root.contentFontFamily
-            font.pixelSize: Style.font.bodySmall
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.tracker.updateProject(root.activeProject.id, {
-                templateId: root.activeProject && root.activeProject.templateId === "summary" ? "detailed" : "summary"
-              })
+            text: "PDF: " + (root.activeProject ? root.activeProject.templateId : "detailed")
+              + (root.templateSettingsVisible ? "  ▴" : "  Customize ▾")
+            onClicked: {
+              root.templateSettingsVisible = !root.templateSettingsVisible
+              if (root.templateSettingsVisible) root.tracker.refreshTemplates()
+            }
+          }
+
+          Flickable {
+            visible: root.templateSettingsVisible
+            width: parent.width
+            height: visible ? Math.min(templateControls.implicitHeight, Style.space(260)) : 0
+            contentHeight: templateControls.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            Controls.ScrollBar.vertical: Controls.ScrollBar {}
+
+            Column {
+              id: templateControls
+              width: parent.width - Style.space(12)
+              spacing: Style.space(6)
+
+              Controls.ComboBox {
+                width: parent.width
+                model: root.tracker.templates
+                textRole: "name"
+                currentIndex: {
+                  var id = root.activeProject ? root.activeProject.templateId : "detailed"
+                  for (var i = 0; i < root.tracker.templates.length; i++)
+                    if (root.tracker.templates[i].id === id) return i
+                  return -1
+                }
+                displayText: currentIndex < 0 ? "Missing: " + (root.activeProject ? root.activeProject.templateId : "") : currentText
+                onActivated: function(index) {
+                  root.tracker.updateProject(root.activeProject.id, { templateId: root.tracker.templates[index].id })
+                }
+              }
+
+              Row {
+                spacing: Style.space(4)
+                Controls.Button {
+                  text: "Edit file"
+                  enabled: root.activeProject && root.activeProject.templateId.indexOf("user:") === 0
+                  onClicked: root.tracker.editTemplate(root.activeProject.templateId)
+                }
+                Controls.Button {
+                  text: "Preview"
+                  onClicked: root.tracker.previewTemplate(root.activeProject.templateId, root.activeProject.id)
+                  Controls.ToolTip.visible: hovered
+                  Controls.ToolTip.text: "Preview saved project settings"
+                }
+                Controls.Button { text: "Refresh"; onClicked: root.tracker.refreshTemplates() }
+              }
+
+              TextField {
+                id: templateNameField
+                width: parent.width
+                placeholderText: "New template name (e.g. client-report)"
+                foreground: root.contentForeground
+                font.family: root.contentFontFamily
+              }
+              Controls.Button {
+                text: "Create editable copy and select"
+                width: parent.width
+                enabled: templateNameField.text.trim() !== ""
+                onClicked: root.tracker.createTemplate(templateNameField.text.trim(), root.activeProject.templateId, root.activeProject.id)
+              }
+              TextField {
+                id: accentColorField
+                width: parent.width
+                placeholderText: "Accent color (#476a89)"
+                foreground: root.contentForeground
+                font.family: root.contentFontFamily
+              }
+              Controls.ComboBox {
+                id: paperSelector
+                width: parent.width
+                model: ["A4", "Letter"]
+              }
+              TextField {
+                id: logoPathField
+                width: parent.width
+                placeholderText: "Logo image path (optional)"
+                foreground: root.contentForeground
+                font.family: root.contentFontFamily
+              }
+              Controls.Button {
+                width: parent.width
+                text: "Save appearance"
+                onClicked: root.tracker.updateProject(root.activeProject.id, {
+                  accentColor: accentColorField.text,
+                  paper: paperSelector.currentIndex === 1 ? "letter" : "a4",
+                  logoPath: logoPathField.text
+                })
+              }
+              Text {
+                width: parent.width
+                text: root.tracker.templateError || root.tracker.templateStatus
+                visible: text !== ""
+                wrapMode: Text.Wrap
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
             }
           }
 
