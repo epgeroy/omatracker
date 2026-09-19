@@ -2,13 +2,12 @@
   "schemaVersion": 1,
   "id": "epgeroy.omatracker",
   "name": "OmaTracker",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": "epgeroy",
   "license": "MIT",
   "description": "Rust-backed project time tracking with Typst reports and Google Drive sync",
-  "kinds": ["service", "bar-widget"],
+  "kinds": ["bar-widget"],
   "entryPoints": {
-    "service": "Service.qml",
     "barWidget": "Panel.qml"
   },
   "barWidget": {

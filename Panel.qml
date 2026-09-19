@@ -15,10 +15,10 @@ Panel {
   // below, which also tear down an in-progress inline edit.
   manageIpc: false
 
-  // A bar widget exists once per monitor. The service is the sole owner of
-  // state and subprocesses so a report or Drive upload only runs once.
-  readonly property var tracker: bar && bar.shell
-    ? bar.shell.serviceFor("epgeroy.omatracker") : null
+  // Replacement bars deliberately expose no service facade to third-party
+  // widgets. This client contains no durable business logic; it invokes the
+  // Rust backend, which serializes state mutations across panel instances.
+  readonly property var tracker: trackerClient
   readonly property var trackerState: tracker ? tracker.state : ({ projects: [], drive: ({}) })
   readonly property var tasks: tracker ? tracker.activeTasks : []
   readonly property bool loaded: tracker ? tracker.loaded : false
@@ -134,7 +134,6 @@ Panel {
     root.tracker.updateDrive(driveRemoteField.text, driveFolderField.text, startupSyncBox.checked)
   }
 
-  onTrackerChanged: if (root.tracker) root.tracker.configure(root.dataFilePath)
   onActiveProjectChanged: if (root.projectsVisible) Qt.callLater(root.seedSettingsFields)
   onTasksChanged: {
     root.clampCursor()
@@ -310,6 +309,10 @@ Panel {
   function deleteCursorTask() {
     var id = root.cursorTaskId()
     if (id !== "") root.removeTask(id)
+  }
+
+  Service {
+    id: trackerClient
   }
 
   IpcHandler {
