@@ -31,6 +31,13 @@ Panel {
     function add(): void { root.open(); view.newTask() }
     function resetAll(): void { root.open(); view.confirm("reset-project", "", "Reset project counters?") }
     function total(): string { return tracker.totalText }
+    function refresh(): void { tracker.refresh() }
+    function status(): string {
+      return JSON.stringify({ loaded: tracker.loaded, backendPath: tracker.backendPath,
+        dataPath: tracker.dataPath, activeProjectId: tracker.activeProject ? tracker.activeProject.id : "",
+        projectIds: (tracker.state.projects || []).map(function(project) { return project.id }),
+        taskIds: tracker.activeTasks.map(function(task) { return task.id }), error: tracker.backendError })
+    }
     function sync(): void { tracker.requestSync() }
     function exportWeekly(): void { tracker.requestExport("weekly") }
     function exportMonthly(): void { tracker.requestExport("monthly") }

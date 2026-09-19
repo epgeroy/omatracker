@@ -137,7 +137,7 @@ Item {
   }
 
   function handleProcess(action, context, exitCode, stdout, stderr) {
-    if (action.indexOf("invoice-") === 0 || action.indexOf("entry-") === 0) {
+    if (action.indexOf("invoice-") === 0 || action.indexOf("entry-") === 0 || (action === "task-edit" && context.agent === true)) {
       try {
         var response = JSON.parse(stdout)
         if (exitCode !== 0 || !response.ok) throw new Error(response.error ? response.error.message : stderr)
@@ -152,7 +152,7 @@ Item {
         }
         else {
           if (response.data.path) openTemplateFile(response.data.path)
-          refreshInvoices()
+          if (action !== "task-edit") refreshInvoices()
           if (action.indexOf("entry-") === 0) refreshEntries(0)
           refresh()
         }
@@ -356,7 +356,14 @@ Item {
     enqueue("task-remove", ["task", "remove", id], {})
   }
 
-  function renameAndAddManualTime(id, title, duration) {
+  function renameAndAddManualTime(id, title, duration, rateOptions) {
+    if (rateOptions !== undefined) {
+      var input = { id: id, title: String(title || "") }
+      if (String(duration || "").trim() !== "") input.add = String(duration)
+      Object.keys(rateOptions).forEach(function(key) { input[key] = rateOptions[key] })
+      enqueue("task-edit", ["agent", "task.update", "--input", JSON.stringify(input)], {agent: true})
+      return
+    }
     var args = ["task", "edit", id, "--title", String(title || "")]
     if (String(duration || "").trim() !== "") args.push("--add", String(duration))
     enqueue("task-edit", args, {})
@@ -478,7 +485,8 @@ Item {
   Timer {
     interval: 5000
     repeat: true
-    running: root.loaded
+    // Keep retrying after a timeout (e.g. a long clear-all holding the ledger lock).
+    running: root.configured
     onTriggered: if (!foregroundQueue.busy) root.refresh()
   }
 

@@ -13,12 +13,16 @@ use uuid::Uuid;
 
 pub mod agent;
 pub mod billing;
+pub mod clear_data;
+mod entities;
 pub mod feedback;
 mod rates;
+pub mod skills;
+mod task_rates;
 pub mod templates;
 pub use rates::{Estimate, HourlyRate};
 
-pub const STATE_VERSION: u32 = 3;
+pub const STATE_VERSION: u32 = 4;
 pub const DEFAULT_PROJECT_ID: &str = "project-unassigned";
 
 fn default_drive_folder() -> String {
@@ -174,6 +178,8 @@ pub struct TaskView {
     #[serde(flatten)]
     pub task: Task,
     pub display_seconds: i64,
+    #[serde(flatten)]
+    pub billing: task_rates::View,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -468,6 +474,7 @@ fn normalize_project(project: &mut Project) {
 
 fn normalize_state(state: &mut State) {
     state.version = STATE_VERSION;
+    state.billing.archived_projects.remove(DEFAULT_PROJECT_ID);
     if state.projects.is_empty() {
         state.projects.push(default_project());
     }
@@ -576,8 +583,13 @@ fn normalize_state(state: &mut State) {
         }
     }
 
-    if !project_ids.contains(&state.active_project_id) {
-        state.active_project_id = state.projects[0].id.clone();
+    if !project_ids.contains(&state.active_project_id)
+        || state
+            .billing
+            .archived_projects
+            .contains(&state.active_project_id)
+    {
+        state.active_project_id = DEFAULT_PROJECT_ID.into();
     }
     state.drive.remote = sanitize_text(&state.drive.remote, 80);
     state.drive.folder = sanitize_text(&state.drive.folder, 160);
@@ -817,6 +829,10 @@ fn task_totals(state: &State, now: i64) -> Vec<i64> {
     let mut task_indices: HashMap<&str, Vec<usize>> = HashMap::new();
     let mut totals = Vec::with_capacity(state.tasks.len());
     for (index, task) in state.tasks.iter().enumerate() {
+        if state.billing.archived_projects.contains(&task.project_id) {
+            totals.push(0);
+            continue;
+        }
         task_indices.entry(&task.id).or_default().push(index);
         totals.push(task_seconds_from_entries(task, std::iter::empty(), now));
     }
@@ -941,9 +957,7 @@ pub fn create_project(path: &Path, name: &str) -> Result<String> {
 
 pub fn select_project(path: &Path, id: &str) -> Result<()> {
     mutate_state(path, |state| {
-        if !state.projects.iter().any(|project| project.id == id) {
-            bail!("project {id} does not exist")
-        }
+        entities::active_project(state, id)?;
         if state.active_project_id == id {
             return Ok(Mutation::Unchanged(()));
         }
@@ -1000,6 +1014,7 @@ pub fn update_project(path: &Path, id: &str, changes: ProjectChanges) -> Result<
         bail!("--currency requires --hourly-rate")
     }
     mutate_state(path, |state| {
+        entities::active_project(state, id)?;
         let project = state
             .projects
             .iter_mut()
@@ -1092,6 +1107,13 @@ pub fn add_task(path: &Path, title: Option<&str>) -> Result<String> {
 
 pub fn start_task(path: &Path, id: &str) -> Result<()> {
     mutate_state(path, |state| {
+        let project = &state
+            .tasks
+            .iter()
+            .find(|t| t.id == id)
+            .context("TASK_NOT_FOUND")?
+            .project_id;
+        entities::active_project(state, project)?;
         let task = state
             .tasks
             .iter_mut()
@@ -1191,24 +1213,7 @@ pub fn reset_active_project(path: &Path) -> Result<()> {
 
 pub fn remove_task(path: &Path, id: &str) -> Result<()> {
     mutate_state(path, |state| {
-        let index = state
-            .tasks
-            .iter()
-            .position(|task| task.id == id)
-            .with_context(|| format!("task {id} does not exist"))?;
-        if state.tasks[index].running {
-            let now = now_ms();
-            let task = state.tasks[index].clone();
-            append_entry(
-                state,
-                &task,
-                task.started_at,
-                now,
-                (now - task.started_at) / 1000,
-                "",
-            );
-        }
-        state.tasks.remove(index);
+        entities::remove_task(state, id)?;
         Ok(Mutation::Changed(()))
     })
 }
@@ -1227,6 +1232,7 @@ pub fn edit_task(
             .iter()
             .position(|task| task.id == id)
             .with_context(|| format!("task {id} does not exist"))?;
+        entities::active_project(state, &state.tasks[index].project_id)?;
         if let Some(title) = title {
             let title = sanitize_text(title, 160);
             let title = if title.is_empty() {
@@ -1328,6 +1334,7 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
         .zip(totals.iter().copied())
         .filter(|(task, _)| task.project_id == state.active_project_id)
         .map(|(task, display_seconds)| TaskView {
+            billing: task_rates::view(state, task, now),
             display_seconds,
             task: task.clone(),
         })
@@ -1359,7 +1366,12 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
         state: PresentationState {
             version: state.version,
             active_project_id: state.active_project_id.clone(),
-            projects: state.projects.clone(),
+            projects: state
+                .projects
+                .iter()
+                .filter(|p| !state.billing.archived_projects.contains(&p.id))
+                .cloned()
+                .collect(),
             drive: state.drive.clone(),
         },
         now_ms: now,
@@ -1375,6 +1387,7 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
             .zip(totals)
             .filter(|(task, _)| task.running)
             .map(|(task, display_seconds)| TaskView {
+                billing: task_rates::view(state, task, now),
                 task: task.clone(),
                 display_seconds,
             })
@@ -1689,6 +1702,9 @@ pub fn check_reports(path: &Path) -> Result<()> {
         let now = now_ms();
         let projects = state.projects.clone();
         for project in projects {
+            if state.billing.archived_projects.contains(&project.id) {
+                continue;
+            }
             if project.export_weekly {
                 queue_missing_periods(state, &mut known_keys, &project, "weekly", now)?;
             }
@@ -1921,6 +1937,7 @@ fn upload_report(path: &Path, report: &Report, drive: &Drive) -> Result<()> {
 }
 
 pub fn sync_state(path: &Path) -> Result<()> {
+    let _worker = lock_file(&PathBuf::from(format!("{}.sync-worker", path.display())))?;
     let (drive, snapshot) = mutate_state(path, |state| {
         state.sync.status = "Syncing local state to Drive".to_owned();
         state.sync.error.clear();

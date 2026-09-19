@@ -10,18 +10,32 @@ use std::process::Command;
 
 pub const ACTIONS: &[&str] = &[
     "help",
+    "request.key",
+    "data.clear",
     "context",
     "issuer.get",
     "issuer.set",
     "client.list",
+    "client.get",
     "client.set",
+    "client.update",
+    "client.remove",
+    "client.delete",
     "project.list",
     "project.get",
     "project.create",
     "project.configure",
+    "project.update",
+    "project.remove",
+    "project.delete",
     "project.rate",
     "task.list",
+    "task.get",
     "task.create",
+    "task.update",
+    "task.rate",
+    "task.remove",
+    "task.delete",
     "task.start",
     "task.stop",
     "entry.list",
@@ -68,7 +82,7 @@ pub struct Cli {
     /// Read the request from a file, or `-` for stdin.
     #[arg(long)]
     pub input_file: Option<PathBuf>,
-    /// Durable retry key. The same key with different arguments is rejected.
+    /// Durable retry key, or "auto" for a new operation (printed before execution).
     #[arg(long)]
     pub key: Option<String>,
 }
@@ -98,6 +112,7 @@ pub struct Input {
     pub delta: Option<i64>,
     pub reason: Option<String>,
     pub revision: Option<u64>,
+    pub entity_revision: Option<String>,
     pub date: Option<String>,
     pub cadence: Option<String>,
     pub timezone: Option<String>,
@@ -113,6 +128,12 @@ pub struct Input {
     pub offset: usize,
     pub limit: Option<usize>,
     pub running: bool,
+    pub include_archived: bool,
+    pub inherit_rate: bool,
+    pub apply_existing: bool,
+    pub add: Option<String>,
+    pub dry_run: bool,
+    pub include_drive: bool,
 }
 
 fn required(value: &Option<String>, name: &str) -> Result<String> {
@@ -121,6 +142,27 @@ fn required(value: &Option<String>, name: &str) -> Result<String> {
         .filter(|v| !v.trim().is_empty())
         .cloned()
         .with_context(|| format!("INVALID_INPUT: {name} is required"))
+}
+
+fn entity_name(value: &Option<String>, field: &str, limit: usize) -> Result<String> {
+    let name = crate::sanitize_text(required(value, field)?, limit);
+    if name.is_empty() {
+        bail!("INVALID_INPUT: {field} cannot be blank")
+    }
+    Ok(name)
+}
+
+fn task_name(i: &Input) -> Result<String> {
+    if let (Some(name), Some(title)) = (&i.name, &i.title)
+        && crate::sanitize_text(name, 160) != crate::sanitize_text(title, 160)
+    {
+        bail!("INVALID_INPUT: name and title must agree when both are supplied")
+    }
+    entity_name(
+        &i.title.clone().or_else(|| i.name.clone()),
+        "name or title",
+        160,
+    )
 }
 fn revision(i: &Input) -> Result<u64> {
     i.revision.context("INVALID_INPUT: revision is required")
@@ -160,7 +202,7 @@ fn range(state: &State, i: &Input, project: &str) -> Result<(i64, i64)> {
 fn read(action: &str, state: &State, i: &Input) -> Result<Value> {
     Ok(match action {
         "context" => {
-            json!({"projects": state.projects, "runningTasks": state.tasks.iter().filter(|t| t.running).collect::<Vec<_>>(),
+            json!({"projects": state.projects.iter().filter(|p| !state.billing.archived_projects.contains(&p.id)).collect::<Vec<_>>(), "runningTasks": state.tasks.iter().filter(|t| t.running).collect::<Vec<_>>(),
             "drafts": state.billing.invoices.iter().filter(|v| v.state == "draft").map(|v| json!({"id":v.id,"project":v.project_id,"total":v.total_text})).collect::<Vec<_>>(),
             "revision": state.billing.revision})
         }
@@ -170,15 +212,25 @@ fn read(action: &str, state: &State, i: &Input) -> Result<Value> {
                 .billing
                 .clients
                 .iter()
-                .map(|(id, details)| json!({"id":id,"details":details}))
+                .filter(|(id, _)| i.include_archived || !state.billing.archived_clients.contains(*id))
+                .map(|(id, details)| json!({"id":id,"details":details,"archived":state.billing.archived_clients.contains(id),"entityRevision":crate::entities::revision(state,"client",id).expect("listed client exists")}))
                 .collect::<Vec<_>>(),
             i,
         ),
-        "project.list" => page(&state.projects, i),
+        "client.get" => {
+            let id = required(&i.id, "id")?;
+            let client = state.billing.clients.get(&id).context("CLIENT_NOT_FOUND")?;
+            json!({"id":id,"details":client,"archived":state.billing.archived_clients.contains(&id),"entityRevision":crate::entities::revision(state,"client",&id)?})
+        }
+        "project.list" => page(&state.projects.iter()
+            .filter(|p| i.include_archived || !state.billing.archived_projects.contains(&p.id))
+            .map(|p| { let mut item = json!(p); item["archived"] = json!(state.billing.archived_projects.contains(&p.id)); item["protected"] = json!(p.id == crate::DEFAULT_PROJECT_ID); item["entityRevision"] = json!(crate::entities::revision(state,"project",&p.id).expect("listed project exists")); item })
+            .collect::<Vec<_>>(), i),
         "project.get" => {
             let id = project_id(state, i)?;
-            json!({"project":state.projects.iter().find(|p| p.id == id), "billing":b::settings(state,&id)?, "revision":state.billing.revision})
+            json!({"project":state.projects.iter().find(|p| p.id == id), "billing":b::settings(state,&id)?, "revision":state.billing.revision,"archived":state.billing.archived_projects.contains(&id),"protected":id == crate::DEFAULT_PROJECT_ID,"entityRevision":crate::entities::revision(state,"project",&id)?})
         }
+        "task.get" => crate::task_rates::task_json(state,state.tasks.iter().find(|t| Some(&t.id) == i.id.as_ref()).context("TASK_NOT_FOUND")?),
         "task.list" => {
             let project = project_id(state, i)?;
             page(
@@ -186,6 +238,7 @@ fn read(action: &str, state: &State, i: &Input) -> Result<Value> {
                     .tasks
                     .iter()
                     .filter(|t| t.project_id == project && (!i.running || t.running))
+                    .map(|t| crate::task_rates::task_json(state,t))
                     .collect::<Vec<_>>(),
                 i,
             )
@@ -200,7 +253,9 @@ fn read(action: &str, state: &State, i: &Input) -> Result<Value> {
             page(&state.entries.iter().filter(|e| e.project_id == project && e.ended_at > start && e.started_at < end
                 && i.id.as_ref().is_none_or(|id| &e.id == id)).map(|e| json!({"entry":e,
                     "billing":state.billing.entries.get(&e.id).cloned().unwrap_or_default(),
-                    "corrections":state.billing.corrections.iter().filter(|c| c.entry_id == e.id).collect::<Vec<_>>()
+                    "corrections":state.billing.corrections.iter().filter(|c| c.entry_id == e.id).collect::<Vec<_>>(),
+                    "rateAdjustments":state.billing.task_rate_adjustments.iter().filter(|a| a.previous_billing.contains_key(&e.id))
+                        .map(|a| json!({"id":a.id,"taskId":a.task_id,"createdAt":a.created_at,"rate":a.rate,"reason":a.reason,"previousBilling":a.previous_billing[&e.id]})).collect::<Vec<_>>()
                 })).collect::<Vec<_>>(),i)
         }
         "summary" => {
@@ -260,9 +315,11 @@ const READS: &[&str] = &[
     "context",
     "issuer.get",
     "client.list",
+    "client.get",
     "project.list",
     "project.get",
     "task.list",
+    "task.get",
     "entry.list",
     "summary",
     "invoice.list",
@@ -272,18 +329,53 @@ const READS: &[&str] = &[
 ];
 
 fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Value> {
+    if let Some(expected) = &i.entity_revision {
+        if i.revision.is_some() {
+            bail!("INVALID_INPUT: use entityRevision or revision, not both")
+        }
+        let (kind, id) = match action {
+            "project.configure" | "project.update" | "project.rate" | "project.remove"
+            | "project.delete" => ("project", project_id(state, i)?),
+            "client.set" | "client.update" | "client.remove" | "client.delete" => {
+                ("client", required(&i.id, "id")?)
+            }
+            "task.update" | "task.rate" | "task.remove" | "task.delete" | "task.start"
+            | "task.stop" => ("task", required(&i.id, "id")?),
+            _ => bail!(
+                "INVALID_INPUT: entityRevision is only supported for task/project/client edits"
+            ),
+        };
+        if expected != &crate::entities::revision(state, kind, &id)? {
+            bail!(
+                "REVISION_CONFLICT: {kind} {id} changed; reload {kind}.get and use its current entityRevision"
+            )
+        }
+    }
     if let Some(expected) = i.revision
         && matches!(
             action,
             "project.configure"
+                | "project.update"
+                | "project.remove"
+                | "project.delete"
                 | "project.rate"
                 | "issuer.set"
                 | "client.set"
+                | "client.update"
+                | "client.remove"
+                | "client.delete"
+                | "task.update"
+                | "task.rate"
+                | "task.remove"
+                | "task.delete"
                 | "migration.resolve"
         )
         && expected != state.billing.revision
     {
-        bail!("REVISION_CONFLICT: ledger changed; inspect current revision")
+        bail!(
+            "REVISION_CONFLICT: ledger revision {expected} is now {}; fetch the entity again and prefer entityRevision for task/project/client edits so unrelated changes do not conflict",
+            state.billing.revision
+        )
     }
     Ok(match action {
         "migration.apply" => {
@@ -291,14 +383,14 @@ fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Val
                 .billing
                 .migration_log
                 .iter()
-                .any(|v| v["action"] == "upgrade")
+                .any(|v| v["action"] == "upgrade" && v["targetVersion"] == crate::STATE_VERSION)
             {
                 state
                     .billing
                     .migration_log
-                    .push(json!({"at":crate::now_ms(),"action":"upgrade"}));
+                    .push(json!({"at":crate::now_ms(),"action":"upgrade","targetVersion":crate::STATE_VERSION}));
             }
-            json!({"version":crate::STATE_VERSION,"backup":format!("{}.pre-invoices.bak",path.display())})
+            json!({"version":crate::STATE_VERSION,"backup":b::upgrade_backup_path(path)?})
         }
         "issuer.set" => {
             state.billing.issuer = i
@@ -309,15 +401,37 @@ fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Val
         }
         "client.set" => {
             let id = i.id.clone().unwrap_or_else(|| crate::make_id("client"));
-            let details = i
+            if state.billing.archived_clients.contains(&id) {
+                bail!("CLIENT_ARCHIVED: {id}")
+            }
+            let mut details = i
                 .details
                 .clone()
                 .context("INVALID_INPUT: details required")?;
-            if details.name.trim().is_empty() {
-                bail!("INVALID_INPUT: client name is required")
-            }
+            details.name = entity_name(&Some(details.name.clone()), "client name", 120)?;
             state.billing.clients.insert(id.clone(), details.clone());
-            json!({"id":id,"details":details})
+            crate::entities::sync_client_name(state, &id);
+            json!({"id":id,"details":details,"entityRevision":crate::entities::revision(state,"client",&id)?})
+        }
+        "client.update" => {
+            let id = required(&i.id, "id")?;
+            if state.billing.archived_clients.contains(&id) {
+                bail!("CLIENT_ARCHIVED: {id}")
+            }
+            let name = entity_name(&i.name, "name", 120)?;
+            state
+                .billing
+                .clients
+                .get_mut(&id)
+                .context("CLIENT_NOT_FOUND")?
+                .name = name;
+            crate::entities::sync_client_name(state, &id);
+            read("client.get", state, i)?
+        }
+        "client.remove" | "client.delete" => {
+            let id = required(&i.id, "id")?;
+            let removed = crate::entities::archive_client(state, &id)?;
+            json!({"id":id,"removed":removed,"archived":true})
         }
         "project.create" => {
             let mut project = if let Some(id) = &i.copy_from {
@@ -338,6 +452,10 @@ fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Val
             } else {
                 b::ProjectBilling::default()
             };
+            if state.billing.archived_clients.contains(&config.client_id) {
+                config.client_id.clear();
+                project.client_name.clear();
+            }
             config.rates = vec![b::RatePoint {
                 effective_at: 1,
                 rate: project.rate.clone(),
@@ -347,14 +465,20 @@ fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Val
             let mut input = i.clone();
             input.project = Some(id.clone());
             configure(state, &input)?;
-            json!({"id":id,"project":state.projects.iter().find(|p| p.id == id),"billing":b::settings(state,&id)?})
+            json!({"id":id,"project":state.projects.iter().find(|p| p.id == id),"billing":b::settings(state,&id)?,"entityRevision":crate::entities::revision(state,"project",&id)?})
         }
-        "project.configure" => {
+        "project.configure" | "project.update" => {
             configure(state, i)?;
             read("project.get", state, i)?
         }
+        "project.remove" | "project.delete" => {
+            let id = project_id(state, i)?;
+            let removed = crate::entities::archive_project(state, &id)?;
+            json!({"id":id,"removed":removed,"archived":true})
+        }
         "project.rate" => {
             let id = project_id(state, i)?;
+            crate::entities::active_project(state, &id)?;
             if i.no_rate == i.rate.is_some() {
                 bail!("INVALID_INPUT: supply exactly one of rate or noRate")
             }
@@ -385,15 +509,56 @@ fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Val
         }
         "task.create" => {
             let project = project_id(state, i)?;
+            crate::entities::active_project(state, &project)?;
             let task = crate::Task {
                 id: crate::make_id("task"),
                 project_id: project,
-                title: required(&i.title, "title")?,
+                title: task_name(i)?,
                 ..Default::default()
             };
-            let out = json!(task);
             state.tasks.push(task);
-            out
+            crate::task_rates::task_json(state, state.tasks.last().unwrap())
+        }
+        "task.update" => {
+            let id = required(&i.id, "id")?;
+            let index = state
+                .tasks
+                .iter()
+                .position(|t| t.id == id)
+                .context("TASK_NOT_FOUND")?;
+            crate::entities::active_project(state, &state.tasks[index].project_id)?;
+            let rate_change = i.rate.is_some() || i.no_rate || i.inherit_rate;
+            if i.name.is_none() && i.title.is_none() && i.add.is_none() && !rate_change {
+                bail!("INVALID_INPUT: supply name/title, add, or a task rate setting")
+            }
+            if i.name.is_some() || i.title.is_some() {
+                state.tasks[index].title = task_name(i)?;
+            }
+            if let Some(duration) = &i.add {
+                let seconds = crate::parse_duration(duration)?;
+                let now = crate::now_ms();
+                let start = seconds
+                    .checked_mul(1000)
+                    .and_then(|ms| now.checked_sub(ms))
+                    .filter(|t| *t > 0)
+                    .context("INVALID_INPUT: added duration is too large")?;
+                let task = state.tasks[index].clone();
+                crate::append_entry(state, &task, start, now, seconds, "Manual entry");
+            }
+            if rate_change {
+                crate::task_rates::assign(state, &id, i)?
+            } else {
+                if i.apply_existing || i.currency.is_some() || i.effective_at.is_some() {
+                    bail!("INVALID_INPUT: rate options require rate, noRate, or inheritRate")
+                }
+                crate::task_rates::task_json(state, &state.tasks[index])
+            }
+        }
+        "task.rate" => crate::task_rates::assign(state, &required(&i.id, "id")?, i)?,
+        "task.remove" | "task.delete" => {
+            let id = required(&i.id, "id")?;
+            crate::entities::remove_task(state, &id)?;
+            json!({"id":id,"removed":true})
         }
         "task.start" | "task.stop" => {
             let id = required(&i.id, "id")?;
@@ -402,6 +567,9 @@ fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Val
                 .iter()
                 .position(|t| t.id == id)
                 .context("TASK_NOT_FOUND")?;
+            if action == "task.start" {
+                crate::entities::active_project(state, &state.tasks[index].project_id)?;
+            }
             if action == "task.start" && !state.tasks[index].running {
                 state.tasks[index].running = true;
                 state.tasks[index].started_at = crate::now_ms();
@@ -419,7 +587,7 @@ fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Val
                 state.tasks[index].running = false;
                 state.tasks[index].started_at = 0;
             }
-            json!(state.tasks[index])
+            crate::task_rates::task_json(state, &state.tasks[index])
         }
         "entry.add" => {
             let task = state
@@ -428,6 +596,7 @@ fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Val
                 .find(|t| Some(&t.id) == i.id.as_ref())
                 .cloned()
                 .context("TASK_NOT_FOUND: id must identify a task")?;
+            crate::entities::active_project(state, &task.project_id)?;
             let start = b::timestamp(&required(&i.start, "start")?)?;
             let end = if let Some(end) = &i.end {
                 b::timestamp(end)?
@@ -674,10 +843,18 @@ fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Val
 
 fn configure(state: &mut State, i: &Input) -> Result<()> {
     let id = project_id(state, i)?;
+    crate::entities::active_project(state, &id)?;
     if let Some(client) = &i.client
+        && !client.is_empty()
         && !state.billing.clients.contains_key(client)
     {
         bail!("CLIENT_NOT_FOUND")
+    }
+    if i.client
+        .as_ref()
+        .is_some_and(|client| state.billing.archived_clients.contains(client))
+    {
+        bail!("CLIENT_ARCHIVED: choose an active client")
     }
     if let Some(template) = &i.template {
         crate::template_path(template)?;
@@ -695,8 +872,8 @@ fn configure(state: &mut State, i: &Input) -> Result<()> {
         bail!("INVALID_INPUT: dueDays must not exceed 3650")
     }
     let project = state.projects.iter_mut().find(|p| p.id == id).unwrap();
-    if let Some(name) = &i.name {
-        project.name = name.clone();
+    if i.name.is_some() {
+        project.name = entity_name(&i.name, "name", 80)?;
     }
     if let Some(paper) = &i.paper {
         if !["a4", "letter"].contains(&paper.as_str()) {
@@ -732,7 +909,12 @@ fn configure(state: &mut State, i: &Input) -> Result<()> {
     let config = state.billing.projects.get_mut(&id).unwrap();
     if let Some(client) = &i.client {
         config.client_id = client.clone();
-        project.client_name = state.billing.clients[client].name.clone();
+        project.client_name = state
+            .billing
+            .clients
+            .get(client)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
     }
     if let Some(template) = &i.template {
         config.template_id = template.clone();
@@ -750,7 +932,11 @@ fn configure(state: &mut State, i: &Input) -> Result<()> {
         config.drive_folder = folder.clone();
     }
     if i.rate.is_some() || i.no_rate {
-        mutate("project.rate", state, Path::new(""), i)?;
+        // The outer operation already checked concurrency before changing fields.
+        let mut rate_input = i.clone();
+        rate_input.entity_revision = None;
+        rate_input.revision = None;
+        mutate("project.rate", state, Path::new(""), &rate_input)?;
     }
     Ok(())
 }
@@ -853,13 +1039,39 @@ fn external(action: &str, path: &Path, i: &Input) -> Result<Value> {
     })
 }
 
+fn replay_target(state: &State, action: &str, result: &Value) -> Result<()> {
+    let Some(id) = result["data"]["id"].as_str() else {
+        return Ok(());
+    };
+    let removed = match action {
+        "project.create" => {
+            state.billing.archived_projects.contains(id)
+                || !state.projects.iter().any(|p| p.id == id)
+        }
+        "client.set" => {
+            state.billing.archived_clients.contains(id) || !state.billing.clients.contains_key(id)
+        }
+        "task.create" => !state
+            .tasks
+            .iter()
+            .any(|t| t.id == id && !state.billing.archived_projects.contains(&t.project_id)),
+        _ => false,
+    };
+    if removed {
+        bail!(
+            "REQUEST_TARGET_REMOVED: this key refers to a removed entity ({id}); to create again use a fresh key from agent request.key or --key auto, not the previous creation key"
+        )
+    }
+    Ok(())
+}
+
 pub fn execute(path: &Path, action: &str, input: Value, key: Option<&str>) -> Result<Value> {
     if action == "help" {
         return Ok(json!({"schemaVersion":1,"ok":true,"data":{
             "actions":ACTIONS,"request":"agent ACTION --input JSON [--key RETRY_KEY]",
             "contract":"AGENT_API.md","dates":"YYYY-MM-DD; to is exclusive; timestamps RFC3339 with offset",
             "invoiceStates":["draft","issued","paid","void"],"money":"integer minor-unit totals encoded as strings",
-            "mutations":"Use --key for creates/corrections/issues. Inspect revisions before editing entries or invoices."
+            "mutations":"Use agent request.key or --key auto for each NEW operation; reuse a resolved key only for exact retries. Prefer entityRevision for task/project/client edits; entries/invoices use revision."
         }}));
     }
     if !ACTIONS.contains(&action) {
@@ -867,6 +1079,34 @@ pub fn execute(path: &Path, action: &str, input: Value, key: Option<&str>) -> Re
     }
     let args: Input =
         serde_json::from_value(input.clone()).context("INVALID_INPUT: malformed request")?;
+    if action == "request.key" {
+        return Ok(
+            json!({"schemaVersion":1,"ok":true,"changed":false,"data":{"key":crate::make_id("request")}}),
+        );
+    }
+    if action == "data.clear" {
+        if input.as_object().is_none_or(|object| {
+            object
+                .keys()
+                .any(|key| !["dryRun", "includeDrive"].contains(&key.as_str()))
+        }) {
+            bail!(
+                "INVALID_INPUT: data.clear accepts only dryRun and includeDrive and clears the whole ledger; use entity removal commands for individual projects/clients/tasks"
+            )
+        }
+        if key.is_some() {
+            bail!(
+                "INVALID_INPUT: data.clear does not accept retry keys; inspect its backup/progress after an interruption before starting another clear"
+            )
+        }
+        let mut data = crate::clear_data::clear(path, args.dry_run, args.include_drive)?;
+        data.as_object_mut().unwrap().remove("schemaVersion");
+        data.as_object_mut().unwrap().remove("ok");
+        return Ok(json!({"schemaVersion":1,"ok":true,"changed":!args.dry_run,"data":data}));
+    }
+    if args.apply_existing && !matches!(action, "task.rate" | "task.update") {
+        bail!("INVALID_INPUT: applyExisting is supported by task.rate and task.update only")
+    }
     if key.is_some_and(|k| k.is_empty() || k.len() > 200) {
         bail!("INVALID_INPUT: retry key must have 1–200 characters")
     }
@@ -911,22 +1151,29 @@ pub fn execute(path: &Path, action: &str, input: Value, key: Option<&str>) -> Re
     crate::mutate_state(path, |state| {
         if let Some(receipt) = key.and_then(|key| state.billing.requests.get(key)) {
             if receipt.fingerprint != fingerprint {
-                bail!("IDEMPOTENCY_CONFLICT: key was used with different arguments")
+                bail!(
+                    "IDEMPOTENCY_CONFLICT: this key already completed a different request; use agent request.key or --key auto for a new operation. Exact retries must keep their original key and arguments"
+                )
             }
             if receipt.result.is_null() {
                 bail!("OPERATION_IN_PROGRESS: retry the original external operation")
             }
+            replay_target(state, action, &receipt.result)?;
             let mut response = receipt.result.clone();
             response["replayed"] = json!(true);
+            response["requestKey"] = json!(key);
             return Ok(Mutation::Unchanged(response));
         }
         let before = serde_json::to_vec(state)?;
         let data = mutate(action, state, path, &args)?;
         let changed = before != serde_json::to_vec(state)?;
-        if changed {
+        if changed || key.is_some() {
             state.billing.revision += 1;
         }
-        let response = json!({"schemaVersion":1,"ok":true,"changed":changed,"revision":state.billing.revision,"data":data});
+        let mut response = json!({"schemaVersion":1,"ok":true,"changed":changed,"revision":state.billing.revision,"data":data});
+        if let Some(key) = key {
+            response["requestKey"] = json!(key);
+        }
         if let Some(key) = key {
             state.billing.requests.insert(
                 key.into(),
@@ -956,7 +1203,9 @@ fn external_receipt(
     let replay = crate::mutate_state(path, |state| {
         if let Some(receipt) = state.billing.requests.get(key) {
             if receipt.fingerprint != fingerprint {
-                bail!("IDEMPOTENCY_CONFLICT: key was used with different arguments")
+                bail!(
+                    "IDEMPOTENCY_CONFLICT: key was used with different arguments; generate a fresh request.key for a new operation"
+                )
             }
             return Ok(Mutation::Unchanged(
                 (!receipt.result.is_null()).then(|| receipt.result.clone()),
@@ -973,10 +1222,12 @@ fn external_receipt(
     })?;
     if let Some(mut response) = replay {
         response["replayed"] = json!(true);
+        response["requestKey"] = json!(key);
         return Ok(response);
     }
     // A crash after upload but before receipt persistence retries the same pinned destination.
-    let response = json!({"schemaVersion":1,"ok":true,"data":external(action,path,args)?});
+    let response =
+        json!({"schemaVersion":1,"ok":true,"requestKey":key,"data":external(action,path,args)?});
     crate::mutate_state(path, |state| {
         state
             .billing
@@ -1000,7 +1251,16 @@ pub fn run(path: &Path, cli: Cli) -> Result<Value> {
         cli.input
     };
     let input = serde_json::from_str(&text).context("INVALID_INPUT: request must be JSON")?;
-    execute(path, &cli.action, input, cli.key.as_deref())
+    let key = cli.key.map(|key| {
+        if key == "auto" {
+            let key = crate::make_id("request");
+            eprintln!("requestKey: {key}");
+            key
+        } else {
+            key
+        }
+    });
+    execute(path, &cli.action, input, key.as_deref())
 }
 
 pub fn error(error: &anyhow::Error) -> Value {

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "epgeroy.omatracker",
   "name": "OmaTracker",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "author": "epgeroy",
   "license": "MIT",
   "description": "Agent-first project tracking, historical rates, PDF invoices and Google Drive sync",

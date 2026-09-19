@@ -48,7 +48,7 @@ FloatingWindow {
     function stopTimer(id) { lastAction = "stop:" + id }
     function startTimer(id) { lastAction = "start:" + id }
     function addTask(title) { lastAction = "add:" + title }
-    function renameAndAddManualTime(id, title, time) { lastAction = "edit:" + id + ":" + title + ":" + time }
+    function renameAndAddManualTime(id, title, time, rates) { lastAction = "edit:" + id + ":" + title + ":" + time; lastChanges = rates || {} }
     function removeTask(id) { lastAction = "remove:" + id }
     function resetTimer(id) { lastAction = "reset:" + id }
     function resetActiveProject() { lastAction = "reset-project" }
@@ -132,6 +132,20 @@ FloatingWindow {
       compare(fake.lastChanges.hourlyRate, "85.25")
       compare(fake.lastChanges.currency, "USD")
       fake.actionFinished("project-update", true)
+    }
+    function test_task_rate_editor_passes_explicit_backfill_and_entity_token() {
+      view.editTask({id:"one",title:"Task with no rate",rateSource:"project",rate:null,hourlyRate:"",entityRevision:"task-token"})
+      wait(30)
+      findChild(view, "taskInheritRate").checked = false
+      findChild(view, "taskRate").text = "50.00"
+      findChild(view, "taskCurrency").text = "eur"
+      findChild(view, "taskApplyExisting").checked = true
+      findChild(view, "saveTask").clicked()
+      compare(fake.lastChanges.rate, "50.00")
+      compare(fake.lastChanges.currency, "EUR")
+      compare(fake.lastChanges.applyExisting, true)
+      compare(fake.lastChanges.entityRevision, "task-token")
+      fake.actionFinished("task-edit", true)
     }
     function test_editor_owns_shortcuts_and_keeps_failed_draft() {
       keyClick(Qt.Key_N); tryCompare(view, "page", "edit")

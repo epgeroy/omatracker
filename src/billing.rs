@@ -6,7 +6,7 @@ use chrono::{Datelike, Duration, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,6 +26,10 @@ pub struct Billing {
     pub requests: BTreeMap<String, Receipt>,
     pub bindings: BTreeMap<String, String>,
     pub migration_log: Vec<Value>,
+    pub archived_projects: BTreeSet<String>,
+    pub archived_clients: BTreeSet<String>,
+    pub task_rates: BTreeMap<String, Vec<crate::task_rates::RatePoint>>,
+    pub task_rate_adjustments: Vec<crate::task_rates::Adjustment>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +177,32 @@ pub struct Invoice {
     pub void_reason: String,
 }
 
+fn version_backup_path(path: &Path, version: u64) -> PathBuf {
+    let suffix = if version >= 3 {
+        "pre-task-rates.bak"
+    } else {
+        "pre-invoices.bak"
+    };
+    PathBuf::from(format!("{}.{suffix}", path.display()))
+}
+
+pub(crate) fn upgrade_backup_path(path: &Path) -> Result<Option<PathBuf>> {
+    let version = match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes)?["version"]
+            .as_u64()
+            .unwrap_or(0),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    if version < u64::from(crate::STATE_VERSION) {
+        Ok(Some(version_backup_path(path, version)))
+    } else {
+        Ok([version_backup_path(path, 3), version_backup_path(path, 2)]
+            .into_iter()
+            .find(|p| p.is_file()))
+    }
+}
+
 pub(crate) fn backup_before_upgrade(path: &Path) -> Result<()> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
@@ -180,10 +210,11 @@ pub(crate) fn backup_before_upgrade(path: &Path) -> Result<()> {
         Err(e) => return Err(e.into()),
     };
     let value: Value = serde_json::from_slice(&bytes)?;
-    if value["version"].as_u64().unwrap_or(0) >= u64::from(crate::STATE_VERSION) {
+    let version = value["version"].as_u64().unwrap_or(0);
+    if version >= u64::from(crate::STATE_VERSION) {
         return Ok(());
     }
-    let backup = PathBuf::from(format!("{}.pre-invoices.bak", path.display()));
+    let backup = version_backup_path(path, version);
     let mut temporary =
         tempfile::NamedTempFile::new_in(path.parent().context("ledger has no parent")?)?;
     temporary.write_all(&bytes)?;
@@ -260,7 +291,7 @@ pub(crate) fn record_rate(
     Ok(())
 }
 
-fn at_rate(state: &State, project: &str, at: i64) -> EntryBilling {
+pub(crate) fn at_rate(state: &State, project: &str, at: i64) -> EntryBilling {
     state
         .billing
         .projects
@@ -297,6 +328,14 @@ pub(crate) fn record_entry(state: &mut State, entry: Entry) {
                 .filter(|at| *at > entry.started_at && *at < entry.ended_at),
         );
     }
+    if let Some(points) = state.billing.task_rates.get(&entry.task_id) {
+        boundaries.extend(
+            points
+                .iter()
+                .map(|p| p.effective_at)
+                .filter(|at| *at > entry.started_at && *at < entry.ended_at),
+        );
+    }
     boundaries.sort_unstable();
     boundaries.dedup();
     for pair in boundaries.windows(2) {
@@ -310,7 +349,7 @@ pub(crate) fn record_entry(state: &mut State, entry: Entry) {
         }
         state.billing.entries.insert(
             segment.id.clone(),
-            at_rate(state, &segment.project_id, pair[0]),
+            crate::task_rates::at(state, &segment.task_id, &segment.project_id, pair[0]),
         );
         state.entries.push(segment);
     }
@@ -749,6 +788,9 @@ pub fn correct(
 pub fn schedule(state: &mut State, now: i64) -> Result<Vec<String>> {
     let mut created = Vec::new();
     for project in state.projects.clone() {
+        if state.billing.archived_projects.contains(&project.id) {
+            continue;
+        }
         let config = settings(state, &project.id)?;
         if config.cadence == "manual" {
             continue;

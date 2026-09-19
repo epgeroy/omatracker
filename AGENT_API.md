@@ -18,6 +18,91 @@ use the versioned `agent` interface.
 
 ## Conventions
 
+### Global skill installation
+
+Install the CLI from its repository with `make install` first (or `make install-bin`
+for a prebuilt release). This puts the `omatracker` command in `~/.local/bin` and
+an independent binary/template bundle in `${XDG_DATA_HOME:-~/.local/share}/omatracker`.
+Ensure `~/.local/bin` is on `PATH`. Then the following commands work from any directory:
+
+```sh
+omatracker skill install --harness opencode
+omatracker skill install --harness claude,codex
+omatracker skill install --harness gemini,cursor --dry-run
+omatracker skill targets --json
+```
+
+When the widget is installed, use `make install-plugin` from the same checkout and
+`omarchy restart shell` to load matching runtime files (a rescan can retain cached
+QML components). This pins the
+widget's backend to the standalone installation, so subsequent CLI updates also
+update its backend. `omarchy-shell omatracker status` reports the widget's actual
+ledger/backend paths and cached entity IDs; `omarchy-shell omatracker refresh`
+requests an immediate refresh. Normal polling picks up external CLI edits within
+five seconds. An old 0.4 backend must not write a version 3 or newer ledger: it drops billing
+and archive metadata it doesn't understand.
+
+The installer is user-global and needs no sudo. It does not open or migrate a ledger.
+Harness names may be comma-separated or passed in repeated `--harness` options.
+
+| Harness | Global skill directory |
+| --- | --- |
+| `shared` (default), `codex` | `~/.agents/skills/omatracker` |
+| `opencode` | `${XDG_CONFIG_HOME:-~/.config}/opencode/skills/omatracker` |
+| `claude` (alias `claude-code`) | `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/omatracker` |
+| `gemini` (alias `gemini-cli`) | `~/.gemini/skills/omatracker` |
+| `cursor` | `~/.cursor/skills/omatracker` |
+
+Codex uses the shared directory, so selecting both deduplicates the destination.
+OpenCode, Gemini CLI and Cursor also discover shared skills; prefer the shared
+installation for those harnesses together rather than creating duplicate copies.
+Claude Code has its own personal skill directory. Environment overrides must be
+absolute paths. These are local-machine installations, not cloud provisioning.
+
+The binary embeds the matching skill and reference docs and records its absolute
+path in `references/installation.md`. Reinstall after moving the executable or
+upgrading OmaTracker. Unmodified managed installations update automatically;
+identical installations are a no-op. Existing/modified content is preserved unless
+`--force` is supplied. Replacements and updates keep the old directory under
+`<harness-config>/omatracker-skill-backups/`, outside the scanned `skills/` tree.
+Symlink destinations must be moved aside explicitly. Multi-harness requests
+preflight all conflicts; publication is per destination, not an all-target transaction.
+
+`--dry-run` creates no files or directories. `--json` returns destinations, planned
+or performed actions, and any backup paths. Quit and restart OpenCode after
+installation. Restart/reload skills in other harnesses to discover the skill.
+
+### Global skill removal
+
+```sh
+omatracker skill remove --harness opencode
+omatracker skill remove --harness claude,codex --dry-run
+omatracker skill uninstall --harness gemini --json
+```
+
+`remove` and its alias `uninstall` accept the same harness names, repeated or
+comma-separated, and default to `shared`. Codex and shared select the same directory;
+removing it affects all harnesses loading that shared skill. Removal is scoped to
+the selected directories; other copies may remain discoverable through a harness's
+compatibility paths.
+
+Unmodified managed installations are deleted. Their contents are checked against
+their own installation manifest, so a CLI update does not make an older skill
+look modified. Modified/unmanaged installations require `--force`; their directory
+is then moved to `omatracker-skill-backups/` outside skill discovery rather than
+discarding customizations. Symlink destinations must be moved aside explicitly.
+Previous backups, unrelated skills, the tracker binary, templates, and ledger remain.
+
+Absent installations are successful no-ops. `--dry-run` writes nothing, including
+when the harness directories don't exist. `--json` returns a `removals` array with
+the harnesses, path, action, and optional backup path. Actions are `remove` or
+`remove-with-backup` for planned removal, `removed` after removal, or `absent`.
+All targets are preflighted before changes; each target shares the installation lock
+and is rechecked before removal. As with install, this is not an all-target transaction.
+Quit and restart OpenCode after removal; restart/reload skills in other harnesses.
+
+### Agent requests
+
 - IDs are opaque; use the IDs returned by commands, never invent them.
 - Supply `project` explicitly, or supply a bound `repository`. The agent API never
   uses the panel's active project and project creation does not switch it.
@@ -34,18 +119,109 @@ use the versioned `agent` interface.
 - Use `--key` for retry-safe ledger writes, especially creation, manual entries,
   corrections, and issuance. Identical retries replay the original response;
   different arguments with the same key return `IDEMPOTENCY_CONFLICT`.
+- Generate a fresh key with `agent request.key` **before each new logical operation**.
+  Store it, then pass it with `--key`; reuse it only for an exact retry. Keys identify
+  requests, not clients/projects or names. Deleting then recreating an entity requires
+  a new key and produces a new ID. Replaying a creation whose entity was removed
+  returns `REQUEST_TARGET_REMOVED` instead of handing back an obsolete ID.
+- For interactive convenience, `--key auto` generates a fresh key per invocation,
+  prints it to stderr before executing, and includes `requestKey` in the successful
+  JSON response. Retry with that resolved key, **not** `auto`, to avoid creating a
+  second operation. Agents should prefer `request.key` so they know the key before
+  starting a write. Successful keyed responses include `requestKey`.
 - Render/upload also support durable retry keys. After interruption, an upload
   retries the same pinned destination with `rclone copyto --checksum`.
 - Other external operations (template/filesystem management, diagnostics, previews,
   and explicit Drive tests) do not accept retry keys. Template creation refuses
   to overwrite an existing name; inspect it after an interrupted create.
-- Entry corrections and invoice edits require the entity's `revision`. Project,
-  client, issuer, and migration updates optionally accept the ledger revision.
-  `REVISION_CONFLICT` and `STALE_DRAFT` mean inspect/refresh, not blindly retry.
+- Task/project/client get/list responses expose an opaque **`entityRevision`**.
+  Pass that token for updates, removals and rate changes. Unrelated ledger activity
+  does not invalidate it; changes to that entity do. This is the preferred guard.
+  Legacy numeric `revision` remains a whole-ledger check for entity edits, so it
+  can conflict after any unrelated write. Do not supply both kinds of token.
+- Entry corrections and invoice edits still require their own numeric `revision`.
+  Issuer and migration updates optionally accept a ledger revision.
+  `REVISION_CONFLICT` and `STALE_DRAFT` mean inspect/refresh the specific target.
 - Ledger changes and retry receipts are committed under one advisory lock. External
   rendering/uploads use separate worker locks so timers remain responsive.
 
 ## Operations
+
+### Clear-all and the protected workspace
+
+`Unassigned` has the fixed ID `project-unassigned`. It is the internal destination
+for unassigned tasks and the fallback when an active project is removed. The state
+model recreates it if missing. **Protected is an application invariant, not an
+authorization or filesystem permission.** Project list/get results label it with
+`protected: true`. Renaming it does not change its reserved identity.
+
+Normal `.remove` operations preserve history. For a deliberate fresh start, the
+CLI has a separate operation:
+
+```sh
+omatracker data clear --dry-run
+omatracker data clear --include-drive --dry-run --json
+```
+
+Execute only when a full reset is intended:
+
+```sh
+omatracker data clear
+```
+
+To include Drive, use this **instead of** the local-only command, before removing
+the metadata that identifies uploaded files:
+
+```sh
+omatracker data clear --include-drive
+```
+
+The agent equivalent is `agent data.clear --input '{"dryRun":true,"includeDrive":true}'`.
+Without `dryRun`, it executes. This operation does not accept retry keys: inspect
+the backup/progress after an interruption before starting another clear, particularly
+if new work has been recorded since. Tests use disposable ledgers/fake remotes;
+running the examples against your actual ledger is a user action, not a required
+installation step.
+
+The operation clears all user projects and clients (including archives), tasks,
+time entries, corrections, task rates, invoice/report records, repository bindings
+and request receipts. It resets Unassigned to an empty default. Its result reports
+`remaining.userProjects: 0` and a separate `systemWorkspace`; a raw project list
+still contains that internal workspace. Issuer details, invoice-number sequences,
+Drive settings, reusable templates/images and local UI/audio preferences survive.
+Number sequences are retained to avoid reusing already-issued invoice numbers.
+
+Before deletion it backs up the raw ledger, feedback checkpoint and generated
+files under `<ledger>.backups/clear-<id>/`. `manifest.json` records the plan,
+original local paths, remote targets and incremental completion status. Local
+invoice storage `<ledger>.invoices/` is cleared, including orphaned captured
+bundles and invoice previews. Tracked report artifacts are removed only within the
+report cache with matching generated filenames. Unrelated caches, anonymous
+legacy previews and previous backups are not swept. A backup intentionally retains
+the old data for recovery; remove that backup separately when you no longer need it.
+
+`--include-drive` requires a configured rclone remote. It inventories exact recorded
+report destinations and recorded/derivable invoice destinations, including known orphaned invoice snapshots,
+and the current `state.json`. Legacy reports without a recorded upload destination
+are not guessed by project name, which could collide with another ledger.
+The remote ledger must share identifiers with this
+ledger or match its contents/configuration (apart from sync bookkeeping). Unknown,
+moved or renamed remote files are not guessed. Unrelated documents and setup-test
+files are not included; no remote directories are deleted.
+
+All remote targets are downloaded to the local backup **before any remote deletion**.
+Their metadata is checked again, then `rclone deletefile` removes each exact file
+and its absence is verified. Rclone's configured deletion behavior applies (Google
+Drive normally moves deleted files to Trash). A remote failure leaves the local
+records intact; already-completed remote deletions and backups are recorded for
+recovery/retry. After remote success, the local ledger is reset and generated
+local files are removed. A later local cleanup failure is reported with the backup
+path and completion journal rather than being presented as a complete success.
+
+The command waits for upload/render workers and holds the ledger lock to prevent
+new writes during the reset. A cloud dry-run makes read-only remote requests but
+creates no data backups or deletions. Lock files may be created. The widget retries
+status polling after temporary lock timeouts and picks up the resulting empty state.
 
 Fields below are inside the `--input` object. Optional fields are in parentheses.
 `details` replaces a complete party profile; read it before updating it.
@@ -55,24 +231,31 @@ Fields below are inside the `--input` object. Optional fields are in parentheses
 | Action | Input |
 | --- | --- |
 | `help` | `{}` — operation names and basic conventions |
+| `data.clear` | (`dryRun: true`, `includeDrive: true`); full reset, only on explicit user request |
+| `request.key` | `{}` — generate a fresh retry key without opening a ledger |
 | `context` | `{}` — projects, running timers, draft summaries, ledger revision |
 | `doctor` | `{}` — tool availability/versions, scheduler diagnostics, setup instructions |
 | `issuer.get` | `{}` |
 | `issuer.set` | `details` (`revision`) |
-| `client.list` | pagination |
-| `client.set` | `details` (`id` to replace, `revision`) |
-| `project.list` | pagination |
+| `client.list` | (`includeArchived: true`, pagination) |
+| `client.get` | `id`; returns details and archive status |
+| `client.set` | `details` (`id` to replace, `entityRevision` for an existing client) |
+| `client.update` | `id`, `name` (`entityRevision`); preserves address/contact/payment fields |
+| `client.remove` / `client.delete` | `id` (`entityRevision`); archive an unassigned client |
+| `project.list` | (`includeArchived: true`, pagination) |
 | `project.get` | `project` or `repository` |
 | `project.create` | `name` (configuration fields below, `copyFrom` project ID) |
-| `project.configure` | `project`, any configuration fields (`revision`) |
-| `project.rate` | `project`, either `rate` + `currency` or `noRate: true` (`effectiveAt`, `revision`) |
+| `project.configure` | `project`, any configuration fields (`entityRevision`) |
+| `project.update` | Alias of `project.configure`; use `name` to rename |
+| `project.remove` / `project.delete` | `project` (`entityRevision`); stop its timers and archive |
+| `project.rate` | `project`, either `rate` + `currency` or `noRate: true` (`effectiveAt`, `entityRevision`) |
 | `repository.bind` | `project`, `repository` existing directory |
 | `repository.resolve` | `repository` |
 
 Party `details`: `name`, `address`, `email`, `registrationId`,
 `paymentInstructions` (issuer). Address/payment text may contain newlines.
 
-Project configuration fields: `client` (client ID), `template`, `logo` (image path;
+Project configuration fields: `name`, `client` (client ID; empty string unlinks), `template`, `logo` (image path;
 empty removes), `accentColor`, `paper` (`a4`/`letter`), `cadence`
 (`monthly`/`weekly`/`manual`), `timezone`, `dueDays` (default 30), `driveFolder`.
 Creation/configuration can also include `rate`, `currency`, `effectiveAt` or
@@ -84,7 +267,11 @@ settings and the current rate, not tasks, entries, invoices, or rate history.
 | Action | Input |
 | --- | --- |
 | `task.list` | `project` (`running: true`, pagination) |
-| `task.create` | `project`, `title` |
+| `task.get` | `id` |
+| `task.create` | `project`, `title` or `name` |
+| `task.update` | `id`, any of `name`/`title`, `add` duration, task-rate fields (`entityRevision`); one atomic edit |
+| `task.rate` | `id`, exactly one of `rate` + `currency`, `noRate: true`, or `inheritRate: true` (`effectiveAt`, `applyExisting`, `reason`, `entityRevision`) |
+| `task.remove` / `task.delete` | `id` (`entityRevision`); stop its timer, remove the task, retain dated entries |
 | `task.start` / `task.stop` | `id` (task ID) |
 | `entry.list` | `project` (`id` entry ID, `from` + `to`, pagination) |
 | `entry.add` | `id` task ID, `start`, either `end` or `seconds` (`note`) |
@@ -97,12 +284,95 @@ Sessions spanning rate changes are split. A missing rate is non-billable; zero i
 a real billable rate. Later rate changes do not reprice recorded entries. Backdated
 entries use the history applicable to their timestamps.
 
+### Assign a rate to an existing task
+
+Tasks inherit the project rate until explicitly overridden. A task can have its
+own rate even when the project has none:
+
+```sh
+# New work only (effective now unless effectiveAt is supplied):
+omatracker agent task.rate --input '{"id":"TASK_ID","rate":"50","currency":"USD"}' --key auto
+
+# Explicitly price its existing unrated, uninvoiced entries too:
+omatracker agent task.rate --input '{"id":"TASK_ID","rate":"50","currency":"USD","applyExisting":true}' --key auto
+
+# Return to project inheritance, or make future work non-billable:
+omatracker agent task.rate --input '{"id":"TASK_ID","inheritRate":true}'
+omatracker agent task.rate --input '{"id":"TASK_ID","noRate":true}'
+```
+
+`task.get`, `task.list`, and widget task snapshots return the current `rate`,
+`hourlyRate`, `rateSource` (`task`/`project`), and `entityRevision`. Agent task
+responses also include the override `rateHistory`. Both project and task rate
+boundaries split new time entries; explicitly returning to project inheritance
+uses that project's historical rate at each point in time.
+
+`applyExisting: true` requires an explicit rate and affects only dated entries for
+that task whose rate is absent, including unresolved billing if explicitly selected
+this way. It skips already-priced entries (including zero-rate entries), externally
+billed entries, and any entry allocated to an issued/paid invoice. It applies to all
+eligible recorded dates, independently of the future policy's `effectiveAt`.
+Undated legacy counters are not converted into billable entries.
+
+For a running timer, backfilling first records elapsed time with its old pricing,
+then rates eligible unrated segments and continues the timer. Without backfill,
+the old running portion retains its old rate and new work uses the new policy.
+The result includes `rateChange.appliedEntryIds`, skip counts, and an audit ID.
+`entry.list` includes entry-specific `rateAdjustments` with the previous billing
+metadata. Existing drafts must be refreshed; issued invoices never change.
+
+The widget's task editor has **Use project rate**, task rate/currency fields, and
+an opt-in checkbox to price existing unrated time. Saving name, manual added time,
+and rate settings is atomic. Added manual time is recorded under its historical
+pricing before the rate change; the opt-in checkbox includes that newly added time
+if it is unrated. Use separate dated `entry.add` calls for precise backdated work.
+
 Corrections retain the original interval and adjust the recorded duration within
 it proportionally, with an audit record. Zero-duration corrected entries remain
 in the ledger. Corrections cannot make duration negative and cannot alter time
 allocated to a live issued/paid invoice or marked externally billed. Void the
 invoice, correct the entries, then prepare a linked replacement. Undo records an
 inverse correction rather than deleting history.
+
+### Renaming and deleting entities
+
+```sh
+omatracker agent task.update --input '{"id":"TASK_ID","name":"Design review"}'
+omatracker agent project.update --input '{"project":"PROJECT_ID","name":"Website redesign"}'
+omatracker agent client.update --input '{"id":"CLIENT_ID","name":"Acme Ltd"}'
+omatracker agent task.remove --input '{"id":"TASK_ID"}' --key remove-task-1
+omatracker agent project.remove --input '{"project":"PROJECT_ID"}' --key remove-project-1
+omatracker agent client.remove --input '{"id":"CLIENT_ID"}' --key remove-client-1
+```
+
+Use the target's `entityRevision` from a get/list response for optional optimistic
+concurrency on these operations. Names must be nonblank. `task.update` accepts `name` or `title`;
+when both are provided they must agree. Renaming retains IDs and settings. Recorded
+time keeps its original task title and issued invoices retain all captured names.
+Client renames update the display name on linked projects while preserving the
+client's other details. Existing drafts may require refresh before issuance.
+
+Task deletion records any running interval before removing the task. Dated entries
+and issued invoices remain; undated legacy counters follow the existing task-delete
+behavior and leave the active counter list with the task.
+
+Project deletion is archival: it hides the project from active lists and the panel,
+stops its timers, disables scheduling, removes repository associations, and selects
+Unassigned if necessary. Tasks, dated time, rates, client links and invoices remain
+available by explicit ID for historical queries and final billing. New tracking and
+configuration changes on archived projects are rejected. The fallback Unassigned
+project cannot be removed.
+
+Clients still assigned to active projects return `CLIENT_IN_USE`. First reassign
+those projects, unlink with `project.update` and `"client":""`, or archive the
+projects. Client removal archives the profile so historical billing still has the
+original contact details. Archived clients cannot be assigned to new projects.
+`project.list` and `client.list` hide archives by default; `includeArchived: true`
+includes them with an `archived` flag. Direct get operations expose archive status.
+Repeated project/client removal is a no-op; use retry keys for task removal.
+When recreating a deleted client, omit `id` in `client.set` and use a fresh key.
+Cloning an archived project preserves its settings but unlinks any archived client;
+assign the replacement client's new ID explicitly.
 
 The panel's old counter amount remains a **current-rate counter estimate**. Use
 `summary` or invoice data for actual historical billing amounts. Resets/deleting a
@@ -176,8 +446,12 @@ do not invent public Google Drive links or change sharing permissions.
 | `migration.apply` | `{}`; persist schema upgrade and audit event |
 | `migration.resolve` | `project`, `from`, `to`, either `rate` + `currency` or `noRate: true` (`externallyBilled: true`, `revision`) |
 
-First write upgrades to ledger version 3, keeping an original sibling
-`<ledger>.pre-invoices.bak`. Existing dated entries have **unresolved** billing,
+First write upgrades to ledger version 4. Version 3 ledgers are backed up to
+`<ledger>.pre-task-rates.bak`; pre-invoice ledgers use `<ledger>.pre-invoices.bak`.
+Backups are not overwritten. Version 3 billing metadata is preserved and tasks
+initially continue inheriting their project rates. Older 0.5 backends reject a
+version 4 ledger, preventing silent loss of task-rate overrides and adjustments.
+Existing pre-invoice dated entries have **unresolved** billing,
 not a guessed rate or silently non-billable status. Resolve complete entry
 intervals in a selected range; boundary-crossing entries remain unresolved until
 the range includes them. Existing archived reports do not establish that work was

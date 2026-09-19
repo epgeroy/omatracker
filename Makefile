@@ -1,8 +1,36 @@
-.PHONY: backend check template-check qml-check ui-check
+.PHONY: backend install install-bin install-plugin install-plugin-bin install-check check template-check qml-check ui-check
+
+BINDIR ?= $(HOME)/.local/bin
+DATADIR ?= $(if $(XDG_DATA_HOME),$(XDG_DATA_HOME),$(HOME)/.local/share)/omatracker
+PLUGIN_DIR ?= $(HOME)/.config/omarchy/plugins/epgeroy.omatracker
+PLUGIN_BACKUP_DIR ?= $(if $(XDG_STATE_HOME),$(XDG_STATE_HOME),$(HOME)/.local/state)/omatracker/plugin-backups
 
 backend:
 	cargo build --release
 	install -Dm755 target/release/omatracker bin/omatracker
+
+# Build from source, then install the same layout used by the plugin release.
+install: backend
+	$(MAKE) install-bin
+
+# Prebuilt releases can use this target without installing Rust.
+install-bin:
+	test -x bin/omatracker
+	install -d "$(BINDIR)" "$(DATADIR)/bin" "$(DATADIR)/templates"
+	install -m755 bin/omatracker "$(DATADIR)/bin/omatracker"
+	install -m644 templates/*.typ "$(DATADIR)/templates/"
+	ln -sfn "$$(realpath "$(DATADIR)")/bin/omatracker" "$(BINDIR)/omatracker"
+
+install-plugin: backend
+	$(MAKE) install-plugin-bin
+
+# Keep the widget and CLI on the same backend without resolving a binary from PATH.
+install-plugin-bin: install-bin
+	python scripts/install-plugin.py --source . --destination "$(PLUGIN_DIR)" \
+	  --backend "$(DATADIR)/bin/omatracker" --backup-root "$(PLUGIN_BACKUP_DIR)"
+
+install-check: backend
+	python tests/install-check.py
 
 check:
 	cargo fmt --check
@@ -12,11 +40,13 @@ check:
 	omarchy plugin validate .
 	$(MAKE) qml-check
 	$(MAKE) ui-check
+	$(MAKE) install-check
 
 ui-check:
 	python tests/ui-check.py
 
 qml-check: backend
+	python tests/external-refresh-check.py
 	@temporary=$$(mktemp -d); \
 	trap 'rm -rf "$$temporary"' EXIT; \
 	  OMATRACKER_TEST_DIR="$$temporary" QT_QPA_PLATFORM=offscreen \

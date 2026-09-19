@@ -6,6 +6,47 @@ the ledger, atomic writes, invoice snapshots, Typst rendering, and Drive uploads
 
 ## Agent-first invoicing
 
+Install the CLI from this repository first:
+
+```sh
+make install
+omatracker skill install --harness opencode
+```
+
+`make install` builds and installs for the current user, without sudo. The command
+is linked at `~/.local/bin/omatracker`; the independent binary and templates live
+under `${XDG_DATA_HOME:-~/.local/share}/omatracker`. Ensure `~/.local/bin` is on
+your `PATH`. Prebuilt release users can run `make install-bin` without Rust.
+Rerun the installation target after updating OmaTracker, and rerun `skill install`
+to refresh global skill documentation. `BINDIR` and `DATADIR` can override the
+installation directories.
+
+If you use the Omarchy widget too, deploy both from this checkout:
+
+```sh
+make install-plugin
+omarchy restart shell
+```
+
+This updates the installed widget's runtime files, backs up its previous files,
+and links its plugin-local backend to the same installed executable used by the
+CLI. Later `make install` updates that shared backend for both consumers. Rerun
+`make install-plugin` for QML/widget changes. `make install-plugin-bin` uses the
+prebuilt binary; `PLUGIN_DIR` and `PLUGIN_BACKUP_DIR` override deployment paths.
+The defaults are `~/.config/omarchy/plugins/epgeroy.omatracker` and
+`${XDG_STATE_HOME:-~/.local/state}/omatracker/plugin-backups`. Existing unrelated
+plugin files and git metadata are retained. New widget installs can be enabled
+with `omarchy plugin enable epgeroy.omatracker`.
+Restart the shell after deploying QML changes; a plugin rescan can leave previously
+loaded QML components cached in the running process.
+
+Do not use an old widget backend against a newer ledger: version 0.4 cannot
+preserve invoice metadata or project/client archive markers. The widget polls
+the ledger every five seconds, but polling an outdated backend will still show
+incorrect results. Inspect the actual widget connection with
+`omarchy-shell omatracker status` (backend path, ledger path, cached entity IDs),
+and request an immediate read with `omarchy-shell omatracker refresh`.
+
 Use the local versioned JSON interface and the bundled skill; no MCP server is
 needed:
 
@@ -18,21 +59,108 @@ bin/omatracker agent migration.preview
 
 See [Agent API](AGENT_API.md) for project/client setup, historical rates, dated
 entries and reversible corrections, invoice issuance, and Drive operations.
-Load [the OmaTracker skill](skills/omatracker/SKILL.md) in your agent's skill
-directory, keeping its reference files with it and pointing it at this installation.
+Install [the OmaTracker skill](skills/omatracker/SKILL.md) globally for your harness:
+
+```sh
+omatracker skill install --harness opencode
+omatracker skill install --harness claude,codex
+omatracker skill targets
+```
+
+With no `--harness`, installation uses the shared `~/.agents/skills/omatracker`
+directory. Supported harnesses are `opencode`, `claude`, `codex`, `gemini`, and
+`cursor`; `shared` selects the cross-harness location. Installations include all
+reference docs and the absolute executable path, so they work from other projects.
+Use `--dry-run` to preview paths or `--json` for structured output. Repeating the
+command updates an unmodified managed installation; customized/existing skills
+require `--force`, which preserves a backup outside the skill discovery directory.
+Quit and restart OpenCode after installing; restart/reload skills in other harnesses.
+
+Remove a global skill with the same harness selection (`uninstall` is an alias):
+
+```sh
+omatracker skill remove --harness opencode
+omatracker skill remove --harness claude,codex --dry-run
+```
+
+Removal supports `--json`, is a no-op if already absent, and leaves the CLI and
+tracking data installed. Modified or unmanaged skill directories require `--force`,
+which moves them to a backup outside the skill discovery directory. With no
+`--harness`, it removes the shared copy; that affects every harness loading that
+shared directory. Other installed copies can still be discovered by your harness.
+Restart/reload the harness after removal (quit and restart OpenCode).
+
 The [manual invoice walkthrough](tests/manual-invoices.md) covers an isolated
 end-to-end setup including branding and Google Drive testing.
+
+Rename tasks, projects, and clients with `agent task.update`, `agent project.update`,
+and `agent client.update` using a `name` field. Each also has `.remove` and `.delete`
+operations. Task deletion preserves dated time; projects and clients are archived
+to preserve billing history. See the [entity lifecycle reference](AGENT_API.md#renaming-and-deleting-entities)
+for examples and client reassignment rules.
+
+Tasks can also have their own hourly rate, including tasks created without one:
+
+```sh
+omatracker agent task.rate --input '{"id":"TASK_ID","rate":"50","currency":"USD"}' --key auto
+# Add "applyExisting":true to explicitly price existing unrated, uninvoiced time.
+```
+
+The widget's task editor exposes the same rate settings and opt-in backfill.
+Use `entityRevision` from task/project/client get/list responses for concurrency
+checks; it isn't invalidated by unrelated ledger changes. Generate a fresh key with
+`agent request.key` for each new operation, or use `--key auto` interactively.
+Recreating deleted entities needs a new creation key and a new ID.
 
 Billability follows the rate at the time of work: a configured rate (including
 zero) is billable; no rate is non-billable. New projects default to monthly invoice
 drafts. Drafts are issued and uploaded explicitly. Invoice numbering, exact totals,
 duplicate-billing protection, payment status, and immutable PDFs are owned by Rust.
 
-First write upgrades old ledgers to version 3 and creates a sibling
-`.pre-invoices.bak`. Existing dated time needs an explicit historical-rate or
+First write upgrades old ledgers to version 4. A version 3 ledger gets a sibling
+`.pre-task-rates.bak`; older ledgers get `.pre-invoices.bak`. Existing dated time
+from pre-invoice ledgers needs an explicit historical-rate or
 non-billable decision before invoicing; old PDFs remain archived reports. Issued
 artifacts live in `<ledger>.invoices/`. Back up the ledger, invoice directory, and
 custom template library together.
+Version 4 protects task-rate metadata: older 0.5 backends reject it instead of
+rewriting data they do not understand. Update the shared CLI/widget backend together.
+
+## Clear all user data
+
+`Unassigned` is an internal fallback workspace (`project-unassigned`), not a
+permission restriction. Normal deletion cannot remove that reserved workspace.
+The clear-all command resets it to an empty default and reports it separately from
+user projects. It permanently removes active **and archived** user records,
+including tasks, dated time, corrections, draft/issued invoice records and reports.
+
+Preview the exact scope:
+
+```sh
+omatracker data clear --dry-run
+omatracker data clear --include-drive --dry-run --json
+```
+
+For a local reset:
+
+```sh
+omatracker data clear
+```
+
+To include Drive, run this **instead**, while the original ledger still identifies
+its uploaded files:
+
+```sh
+omatracker data clear --include-drive
+```
+
+The command creates a backup under `<ledger>.backups/clear-…` first. It preserves
+reusable templates, preferences, the issuer profile, Drive configuration and
+invoice-number counters. Generated invoice documents (including orphaned local
+bundles) and tracked report artifacts are removed from active storage. Previously
+created backups and unrelated cache files remain. Drive cleanup deletes only
+identified invoice/report files and a verified matching `state.json`; it never
+purges the remote folder. See [clear-all details](AGENT_API.md#clear-all-and-the-protected-workspace).
 
 ## Plugin installation
 
@@ -229,8 +357,9 @@ sudo pacman -S typst rclone
   Use the bundled layouts or create your own through **Menu → PDF templates and
   appearance**. See [Custom PDF templates](TEMPLATES.md) for editing, CLI commands,
   the data contract, and a manual testing walkthrough.
-- **rclone** is invoked only as `rclone copyto --checksum`; OmaTracker never
-  runs destructive remote synchronization or deletes remote files.
+- **rclone** handles uploads with `copyto --checksum`. Explicit
+  `data clear --include-drive` additionally inventories, backs up, and deletes
+  identified tracker files with `deletefile`; it never purges a remote directory.
 - rclone owns Google OAuth tokens. OmaTracker stores neither OAuth credentials
   nor API secrets.
 

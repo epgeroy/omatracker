@@ -60,6 +60,15 @@ pub fn preferences(path: &Path) -> Result<Preferences> {
     Ok(read_checkpoint(path)?.preferences)
 }
 
+/// Reset work milestones while retaining preferences. Caller holds the ledger lock.
+pub(crate) fn clear_history(path: &Path) -> Result<()> {
+    let checkpoint = Checkpoint {
+        preferences: read_checkpoint(path)?.preferences,
+        ..Default::default()
+    };
+    atomic_write(&sidecar(path), &serde_json::to_vec(&checkpoint)?)
+}
+
 pub fn configure(path: &Path, hourly_click: bool, volume: u8, reduced_motion: bool) -> Result<()> {
     if volume > 100 {
         bail!("volume must be between 0 and 100")

@@ -88,6 +88,24 @@ Item {
       } else if (root.phase === 9) {
         if (!root.check(tracker.activeProjectEstimate === null && tracker.activeProjectAmountText === "", "clear rate")) return
         root.phase++
+        tracker.renameAndAddManualTime(root.taskId, "Task rate test", "", {
+          rate: "50", currency: "USD", applyExisting: true, entityRevision: tracker.activeTasks[0].entityRevision })
+      } else if (root.phase === 10) {
+        if (!root.check(tracker.backendError === "" && tracker.activeTasks[0].rateSource === "task"
+          && tracker.activeTasks[0].hourlyRate === "50.00", "task rate on an unrated project")) return
+        root.phase++
+        tracker.renameAndAddManualTime(root.taskId, "Must not save", "", {
+          rate: "invalid", currency: "USD", entityRevision: tracker.activeTasks[0].entityRevision })
+      } else if (root.phase === 11) {
+        if (!root.check(tracker.backendError !== "" && tracker.activeTasks[0].title === "Task rate test"
+          && tracker.activeTasks[0].hourlyRate === "50.00", "atomic task rate error")) return
+        root.phase++
+        tracker.renameAndAddManualTime(root.taskId, "Task rate test", "", {
+          inheritRate: true, entityRevision: tracker.activeTasks[0].entityRevision })
+      } else if (root.phase === 12) {
+        if (!root.check(tracker.backendError === "" && tracker.activeTasks[0].rateSource === "project"
+          && tracker.activeTasks[0].rate === null, "restore project rate inheritance")) return
+        root.phase++
         marker.running = true
       }
     }

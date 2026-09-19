@@ -25,6 +25,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Preview or clear all user tracking/billing data.
+    Data {
+        #[command(subcommand)]
+        command: omatracker::clear_data::DataCommand,
+    },
+    /// Manage the bundled skill globally for coding-agent harnesses.
+    Skill {
+        #[command(subcommand)]
+        command: omatracker::skills::SkillCommand,
+    },
     /// Structured agent API: run `agent help` for operations and request conventions.
     Agent(omatracker::agent::Cli),
     /// Print the complete presentation state as JSON.
@@ -223,8 +233,16 @@ enum TemplateCommand {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Skill installation must not open, lock, or migrate a tracking ledger.
+    if let Commands::Skill { command } = &cli.command {
+        return omatracker::skills::run(command);
+    }
     let data_path = cli.data_path.unwrap_or(default_data_path()?);
     match cli.command {
+        Commands::Data { command } => omatracker::clear_data::run(&data_path, command)?,
+        Commands::Skill { .. } => {
+            unreachable!("skill commands are handled before ledger resolution")
+        }
         Commands::Agent(request) => match omatracker::agent::run(&data_path, request) {
             Ok(value) => println!("{}", serde_json::to_string(&value)?),
             Err(error) => {

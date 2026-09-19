@@ -65,6 +65,26 @@ and verify new work is billable at zero rather than classified as non-billable.
 
 ## 3. Draft, issue, render, payment, corrections
 
+### Task-rate and lifecycle checks
+
+On a separate unrated project/task, add a dated hour and call `task.rate` with
+`rate: "50"`, `currency: "USD"`. Its existing hour must remain non-billable.
+Repeat with `applyExisting: true`: that hour becomes USD 50.00 and gains a rate
+adjustment audit record. A later rate change must not reprice that already-priced
+hour. In the widget, edit a task, turn off **Use project rate**, enter a rate/currency,
+and explicitly check the existing-time option when desired. Verify the result with
+`task.get`, `entry.list`, and `summary`.
+
+Read an entity's `entityRevision`, change an unrelated client or task, then update
+the original entity using that token: it should succeed. Change the original
+entity itself, then retry with the old token: it should return `REVISION_CONFLICT`.
+Create/delete/recreate a client or project using a fresh `request.key` for each
+operation; the replacement receives a new ID. Reusing the deleted entity's old
+creation key must return `REQUEST_TARGET_REMOVED`, not an obsolete successful ID.
+`--key auto` is for a new operation; use its printed/returned key for an exact retry.
+
+### Invoice checks
+
 ```bash
 tracker agent invoice.create --input '{"project":"PROJECT_ID","from":"2025-08-01","to":"2025-09-01","currency":"USD"}' --key demo-draft
 tracker agent invoice.preview --input '{"id":"INVOICE_ID"}'
@@ -125,11 +145,17 @@ The test upload leaves a uniquely named file in `setup-tests/` for inspection.
 
 Copy an old ledger to a **different disposable path** and point the function at it.
 Run `migration.preview`, then `migration.apply`. Verify original bytes in the
-`.pre-invoices.bak` sibling and preservation of entries, timers, and archived reports.
+`.pre-invoices.bak` sibling (or `.pre-task-rates.bak` for a version 3 source) and
+preservation of entries, timers, archived reports and invoice metadata. Verify the
+resulting version is 4; an older 0.5 CLI should reject it rather than rewrite it.
 Unresolved time must be excluded from invoices until `migration.resolve` specifies
 a historical rate or `noRate`; identify already-billed ranges with
 `externallyBilled: true`. Undated legacy counters must not appear in invoices.
 
 Back up/restore the ledger, `.invoices/` directory, and template library together.
-Remove the sandbox after reviewing results. Delete the test Drive folder separately
-if desired; OmaTracker does not delete remote artifacts.
+To test clear-all while the sandbox still contains its invoice metadata, first run
+`tracker data clear --include-drive --dry-run --json` and inspect the exact paths.
+When you choose to execute it, omit `--dry-run`. Verify zero user projects/clients,
+an empty internal Unassigned workspace, a backup path, and removal of only the
+listed remote files. Setup-test files and remote folders are outside this scope.
+Remove the sandbox and the remaining test Drive folder separately when finished.

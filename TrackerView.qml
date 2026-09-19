@@ -476,7 +476,7 @@ Item {
       Caption {
         visible: !!root.tracker.activeProjectEstimate
         text: root.tracker.activeProjectEstimate ? root.tracker.activeProjectEstimate.rateText
-          + " · Estimated " + root.tracker.activeProjectAmountText : ""
+          + " · Project-rate estimate " + root.tracker.activeProjectAmountText : ""
       }
       Action {
         width: parent.width; leftAlign: true
@@ -532,13 +532,25 @@ Item {
       function save() {
         if (!title.text.trim() || root.pendingAction !== "") return
         root.pendingAction = root.draftTask ? "task-edit" : "task-add"
-        if (root.draftTask) root.tracker.renameAndAddManualTime(root.draftTask.id, title.text, duration.text)
+        if (root.draftTask) {
+          var rates = {}
+          if (root.draftTask.entityRevision) rates.entityRevision = root.draftTask.entityRevision
+          if (inherit.checked) rates.inheritRate = true
+          else if (taskRate.text.trim() === "") rates.noRate = true
+          else { rates.rate = taskRate.text.trim(); rates.currency = taskCurrency.text.trim().toUpperCase(); rates.applyExisting = priceExisting.checked }
+          root.tracker.renameAndAddManualTime(root.draftTask.id, title.text, duration.text, rates)
+        }
         else root.tracker.addTask(title.text)
       }
       Field { id: title; label: "Task name"; text: root.draftTask ? root.draftTask.title : ""; placeholder: "What are you working on?"; onAccepted: save() }
       Field { id: duration; visible: !!root.draftTask; label: "Add time (optional)"; placeholder: "e.g. 25m or 1h30m"; onAccepted: save() }
       Caption { visible: !!root.draftTask; text: "Manual time uses its historical rate. The agent can add dated entries or correct specific entries." }
-      Action { text: root.pendingAction ? "Saving…" : "Save task"; bordered: true; enabled: title.text.trim() !== "" && root.pendingAction === ""; onClicked: save() }
+      Toggle { id: inherit; objectName: "taskInheritRate"; visible: !!root.draftTask; label: "Use project rate"; Component.onCompleted: checked = !root.draftTask || root.draftTask.rateSource !== "task" }
+      Field { id: taskRate; objectName: "taskRate"; visible: !!root.draftTask && !inherit.checked; label: "Task hourly rate (empty = non-billable)"; placeholder: "e.g. 50.00"; Component.onCompleted: text = root.draftTask ? root.draftTask.hourlyRate || "" : "" }
+      Field { id: taskCurrency; objectName: "taskCurrency"; visible: !!root.draftTask && !inherit.checked; label: "Task currency"; Component.onCompleted: text = root.draftTask && root.draftTask.rate ? root.draftTask.rate.currency : root.project && root.project.rate ? root.project.rate.currency : "USD" }
+      Toggle { id: priceExisting; objectName: "taskApplyExisting"; visible: !!root.draftTask && !inherit.checked && taskRate.text.trim() !== ""; label: "Also price existing unrated, uninvoiced time" }
+      Caption { visible: !!root.draftTask; text: "Rates normally apply to new work. The option above explicitly prices eligible old time; priced and invoiced entries stay unchanged." }
+      Action { objectName: "saveTask"; text: root.pendingAction ? "Saving…" : "Save task"; bordered: true; enabled: title.text.trim() !== "" && root.pendingAction === ""; onClicked: save() }
     }
   }
   Component {
