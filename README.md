@@ -1,86 +1,112 @@
 # TimeTracker
 
-An Omarchy shell bar widget for tracking time against a list of tasks based on this Gnome [extension](https://github.com/aliakseiz/tracker). The bar
-shows the combined total of every task; clicking it opens the task list.
+TimeTracker is an Omarchy bar widget backed by a native Rust CLI. Quickshell
+only presents JSON returned by the CLI and submits commands to it; the CLI owns
+the ledger, atomic writes, report snapshots, Typst rendering, and Drive uploads.
 
-**Note:** This plugin is vibe-coded with Claude Opus 5. Use with caution.
-
-## Screenshot
-<img width="454" height="185" alt="image" src="https://github.com/user-attachments/assets/514e26c1-3306-4634-988f-fbe2fd542d88" />
-
-
-## Install
-
-The plugin lives in the user plugin directory, to install:
-```
-omarchy plugin add https://github.com/smsanagustin/time-tracker --enable
-```
-
-
-Saving anything under `~/.config/omarchy/plugins/` reloads plugin code
-automatically; `shell.json` hot-reloads too.
-
-## Uninstall or remove the plugin
-To remove the plugin from your shell, run:
-```
-omarchy plugin remove sophie.time-tracker
-```
-
-## How to use
-
-- **Bar button** — Shows the total time of all tasks. Color changes to red when at least one timer is running.
-- **Task timer** - For each task you can: start/stop timer, edit task, reset timer or delete the task.
-
-Multiple timers can run at once — nothing stops the previous one when you
-start another.
-
-## Keyboard
-
-The popup is fully keyboard-navigable.
-
-| Key | Action |
-| --- | --- |
-| `j` / `↓` | Move the cursor down — or into an expanded row's actions |
-| `k` / `↑` | Move the cursor up — or back out of the actions onto the row |
-| `l` / `→` | Expand the cursor row's actions, then walk them rightwards |
-| `h` / `←` | Walk the actions leftwards; from the first one, collapse the row |
-| `Enter` / `Space` | Run the focused action, or start/stop the cursor task's timer |
-| `e` | Edit the cursor task |
-| `r` | Reset the cursor task to `00:00:00` |
-| `d` / `x` | Delete the cursor task |
-| `a` / `n` | Add a new task |
-| `Tab` | Move to the next bar panel |
-| `?` | Toggle the keybind cheat sheet |
-| `Esc` | Close the cheat sheet if open, otherwise the popup |
-
-## Data
-
-Tasks persist to `~/.config/omarchy/time-tracker.json` (override with the
-`dataPath` setting on the widget's `shell.json` entry). A running task stores
-the epoch-ms stamp of when it started alongside its banked seconds, so timers
-keep counting correctly across a shell restart.
-
-The file is watched, so hand-edits (and edits from other shell instances) are
-picked up immediately without a reload.
-
-## Multiple monitors
-
-The bar widget is instantiated once per monitor, and each instance keeps its own
-copy of the task list. They stay in sync through the data file: every mutation is
-written out, and the other instances reload on the change — so starting a timer
-on one monitor starts it on all of them. Only the shared task state syncs; the
-popup, keyboard cursor, and in-progress edit stay local to the monitor you're
-using.
-
-## IPC
+## Plugin installation
 
 ```bash
-omarchy-shell time-tracker open     # or close / show / hide / toggle
-omarchy-shell time-tracker add      # append a new "Empty" task
-omarchy-shell time-tracker resetAll # zero every task's timer
-omarchy-shell time-tracker total    # print the combined total
+omarchy plugin add https://github.com/epgeroy/omatracker --enable
+```
+
+The plugin loader clones files but does not build Rust projects or run install
+hooks. Releases must therefore include an executable
+`bin/time-tracker` for the intended Linux architecture. The widget resolves and
+runs that plugin-local binary; it never relies on a similarly named program in
+`PATH`.
+
+The current development target is `x86_64-unknown-linux-gnu`. A release for a
+different architecture needs a separately compiled `bin/time-tracker`.
+
+## Development build
+
+Rust is only required when building the backend. Build the plugin-local binary
+and run all checks with:
+
+```bash
+make backend
+make check
+```
+
+`make backend` produces `bin/time-tracker`, which is the executable that must
+be included when publishing a plugin release.
+
+## CLI
+
+The CLI keeps data in `~/.config/omarchy/time-tracker.json` by default. Pass
+`--data-path <file>` to use another ledger, which is also how the panel honors
+the widget's `dataPath` setting.
+
+```bash
+bin/time-tracker status --json
+bin/time-tracker project create "Client A"
+bin/time-tracker project select <project-id>
+bin/time-tracker task add "Design"
+bin/time-tracker task start <task-id>
+bin/time-tracker task stop <task-id>
+bin/time-tracker task edit <task-id> --add 1h30m
+bin/time-tracker report export weekly
+bin/time-tracker report check
+bin/time-tracker report retry
+bin/time-tracker sync
+bin/time-tracker service install
+```
+
+All mutations acquire an advisory lock and replace the JSON ledger atomically.
+The CLI migrates the version 1 task list into the `Unassigned` project on its
+first write. Historical cumulative totals are retained as undated legacy time,
+so they never appear in a date-based report.
+
+`bin/time-tracker service install` creates and enables a persistent user-level
+systemd timer, which runs `report check` every 15 minutes even when Quickshell
+is closed. Use `bin/time-tracker service remove` to disable and delete it. The
+panel exposes the same background-check setting and also requests `report
+check` while it is running; the CLI is the sole authority for which reports are
+due.
+
+## Typst and Google Drive
+
+Time tracking has no external runtime dependency. PDF exports and Drive uploads
+are opt-in:
+
+```bash
+sudo pacman -S typst rclone
+```
+
+- **Typst** is invoked as `typst compile` against the bundled local templates.
+- **rclone** is invoked only as `rclone copyto --checksum`; TimeTracker never
+  runs destructive remote synchronization or deletes remote files.
+- rclone owns Google OAuth tokens. TimeTracker stores neither OAuth credentials
+  nor API secrets.
+
+Configure a `drive` remote independently, ideally with rclone's `drive.file`
+scope, then set the remote and folder through the panel or:
+
+```bash
+bin/time-tracker drive update --remote time-tracker --folder TimeTracker --sync-on-startup true
+```
+
+Report snapshots, generated Typst sources, and PDFs live in
+`~/.cache/omarchy/time-tracker/` until uploaded. Reports are immutable snapshots
+of the project metadata, selected template, and time entries at queue time.
+
+## Quickshell IPC
+
+```bash
+omarchy-shell time-tracker open
+omarchy-shell time-tracker add
+omarchy-shell time-tracker total
+omarchy-shell time-tracker sync
+omarchy-shell time-tracker exportWeekly
+omarchy-shell time-tracker exportMonthly
 ```
 
 ## License
 
 MIT
+
+## Legal
+
+- [Privacy Policy](PRIVACY_POLICY.md)
+- [Terms of Service](TERMS_OF_SERVICE.md)

@@ -2,17 +2,18 @@
   "schemaVersion": 1,
   "id": "sophie.time-tracker",
   "name": "TimeTracker",
-  "version": "0.1.0",
-  "author": "sophie",
+  "version": "0.3.0",
+  "author": "epgeroy",
   "license": "MIT",
-  "description": "Per-task time tracking with a running total in the bar",
-  "kinds": ["bar-widget"],
+  "description": "Rust-backed project time tracking with Typst reports and Google Drive sync",
+  "kinds": ["service", "bar-widget"],
   "entryPoints": {
+    "service": "Service.qml",
     "barWidget": "Panel.qml"
   },
   "barWidget": {
     "displayName": "TimeTracker",
-    "description": "Track time per task; the bar shows the combined total",
+    "description": "Present Rust-backed project time tracking and PDF reports",
     "category": "Productivity",
     "allowMultiple": false,
     "defaultSection": "center",

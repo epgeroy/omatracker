@@ -15,22 +15,18 @@ Panel {
   // below, which also tear down an in-progress inline edit.
   manageIpc: false
 
-  // Task list, mirrored to disk on every mutation. Entries are plain objects:
-  // { id, title, seconds, running, startedAt }. `seconds` is the banked total
-  // and `startedAt` is the epoch-ms stamp of the current run, so a running
-  // timer keeps counting across a shell restart.
-  property var tasks: []
-  property bool loaded: false
-
-  // Canonical serialization of the state this instance last read or wrote. The
-  // bar widget is instantiated once per monitor, and every instance watches the
-  // same file, so this is how an instance tells "someone else changed the
-  // tasks" from "that's just my own write echoing back".
-  property string syncedText: ""
-
-  // Wall clock for the running-task readouts. Ticked once a second, only
-  // while something needs it.
-  property real nowMs: Date.now()
+  // A bar widget exists once per monitor. The service is the sole owner of
+  // state and subprocesses so a report or Drive upload only runs once.
+  readonly property var tracker: bar && bar.shell
+    ? bar.shell.serviceFor("sophie.time-tracker") : null
+  readonly property var trackerState: tracker ? tracker.state : ({ projects: [], drive: ({}) })
+  readonly property var tasks: tracker ? tracker.activeTasks : []
+  readonly property bool loaded: tracker ? tracker.loaded : false
+  readonly property real nowMs: tracker ? tracker.nowMs : Date.now()
+  readonly property var activeProject: tracker ? tracker.activeProject : null
+  readonly property var projects: trackerState.projects || []
+  property bool projectsVisible: false
+  property bool settingsVisible: false
 
   // Row the keyboard cursor is on. `cursorActive` stays false until the user
   // actually presses j/k so a freshly opened panel isn't pre-highlighted.
@@ -73,10 +69,11 @@ Panel {
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property real panelWidth: Style.space(420)
 
-  readonly property int totalSeconds: TaskModel.totalSeconds(tasks, nowMs)
-  readonly property int runningCount: TaskModel.runningCount(tasks)
+  readonly property int totalSeconds: tracker ? tracker.displayTotalSeconds : 0
+  readonly property int runningCount: tracker ? tracker.runningTimers : 0
   readonly property bool anyRunning: runningCount > 0
   readonly property string totalText: TaskModel.formatDuration(totalSeconds)
+  readonly property string activeProjectText: tracker ? tracker.activeProjectText : "00:00:00"
 
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string configuredPath: String(setting("dataPath", "~/.config/omarchy/time-tracker.json"))
@@ -90,7 +87,6 @@ Panel {
   // ------------------------------------------------------------- lifecycle
 
   function open() {
-    root.nowMs = Date.now()
     root.controller.show()
   }
 
@@ -112,102 +108,63 @@ Panel {
     root.opened ? root.close() : root.open()
   }
 
-  // ------------------------------------------------------------ persistence
+  function seedSettingsFields() {
+    if (!root.activeProject) return
+    projectNameField.text = root.activeProject.name
+    clientNameField.text = root.activeProject.clientName
+    companyNameField.text = root.activeProject.companyName
+    weeklyReportBox.checked = root.activeProject.exportWeekly
+    monthlyReportBox.checked = root.activeProject.exportMonthly
+    driveRemoteField.text = root.trackerState.drive.remote
+    driveFolderField.text = root.trackerState.drive.folder
+  }
 
-  function loadTasks(raw) {
-    var next = TaskModel.parseState(raw)
-    var text = TaskModel.serialize(next)
-    // Our own write coming back through the file watcher — nothing to apply,
-    // and re-assigning `tasks` here would needlessly rebuild every row.
-    if (root.loaded && text === root.syncedText) return
-    root.syncedText = text
-    root.tasks = next
-    root.loaded = true
+  function toggleProjects() {
+    root.projectsVisible = !root.projectsVisible
+    if (root.projectsVisible) Qt.callLater(root.seedSettingsFields)
+  }
+
+  function saveProjectSettings() {
+    if (!root.tracker || !root.activeProject) return
+    root.tracker.updateProject(root.activeProject.id, {
+      name: projectNameField.text,
+      clientName: clientNameField.text,
+      companyName: companyNameField.text
+    })
+    root.tracker.updateDrive(driveRemoteField.text, driveFolderField.text, startupSyncBox.checked)
+  }
+
+  onTrackerChanged: if (root.tracker) root.tracker.configure(root.dataFilePath)
+  onActiveProjectChanged: if (root.projectsVisible) Qt.callLater(root.seedSettingsFields)
+  onTasksChanged: {
     root.clampCursor()
-    root.nowMs = Date.now()
-    // The task being edited here may have been deleted on another monitor.
     if (root.editingId !== "" && TaskModel.indexOfId(root.tasks, root.editingId) < 0) root.cancelEdit()
-  }
-
-  function persist() {
-    // Guard against writing an empty list over a real file if a mutation
-    // somehow lands before the first load resolves.
-    if (!root.loaded) return
-    root.syncedText = TaskModel.serialize(root.tasks)
-    dataFile.setText(root.syncedText)
-  }
-
-  function setTasks(next) {
-    root.tasks = next
-    root.clampCursor()
-    root.persist()
-  }
-
-  // QML doesn't see in-place edits to a `var` array, so every mutation
-  // rebuilds the list with a fresh copy of the affected task.
-  function updateTask(id, changes) {
-    var next = []
-    for (var i = 0; i < root.tasks.length; i++) {
-      var task = root.tasks[i]
-      if (task.id !== id) {
-        next.push(task)
-        continue
-      }
-      var copy = {
-        id: task.id,
-        title: task.title,
-        seconds: task.seconds,
-        running: task.running,
-        startedAt: task.startedAt
-      }
-      for (var key in changes) copy[key] = changes[key]
-      next.push(copy)
-    }
-    root.setTasks(next)
   }
 
   // ----------------------------------------------------------- task actions
 
   function addTask() {
-    var next = root.tasks.slice()
-    var task = {
-      id: TaskModel.makeId(Date.now()),
-      title: "Empty",
-      seconds: 0,
-      running: false,
-      startedAt: 0
-    }
-    next.push(task)
-    root.setTasks(next)
-    root.cursorIndex = next.length - 1
+    if (!root.tracker) return
+    root.tracker.addTask()
+    root.cursorIndex = Math.max(0, root.tasks.length)
     root.cursorActive = true
     root.expandedId = ""
   }
 
   function removeTask(id) {
-    var next = []
-    for (var i = 0; i < root.tasks.length; i++) {
-      if (root.tasks[i].id !== id) next.push(root.tasks[i])
-    }
+    if (!root.tracker) return
     if (root.expandedId === id) root.expandedId = ""
     if (root.editingId === id) root.cancelEdit()
-    root.setTasks(next)
+    root.tracker.removeTask(id)
+    root.clampCursor()
   }
 
   function startTimer(id) {
-    root.nowMs = Date.now()
-    root.updateTask(id, { running: true, startedAt: root.nowMs })
+    if (root.tracker) root.tracker.startTimer(id)
   }
 
   function stopTimer(id) {
-    var index = TaskModel.indexOfId(root.tasks, id)
-    if (index < 0) return
-    root.nowMs = Date.now()
-    root.updateTask(id, {
-      running: false,
-      startedAt: 0,
-      seconds: TaskModel.elapsedSeconds(root.tasks[index], root.nowMs)
-    })
+    if (root.tracker) root.tracker.stopTimer(id)
   }
 
   function toggleTimer(id) {
@@ -216,35 +173,14 @@ Panel {
     root.tasks[index].running ? root.stopTimer(id) : root.startTimer(id)
   }
 
-  // "Reset", the second row action: zero the clock but leave a running timer
-  // running — it simply starts counting again from 00:00:00.
+  // Reset starts a new visible counter while retaining the closed session for
+  // reports. The service records a running segment before rebasing it.
   function resetTimer(id) {
-    var index = TaskModel.indexOfId(root.tasks, id)
-    if (index < 0) return
-    root.nowMs = Date.now()
-    root.updateTask(id, {
-      seconds: 0,
-      startedAt: root.tasks[index].running ? root.nowMs : 0
-    })
+    if (root.tracker) root.tracker.resetTimer(id)
   }
 
-  // "Reset all", the footer action: zero every task's clock. Same rule as the
-  // per-row reset — a running timer keeps running, just from 00:00:00.
   function resetAllTimers() {
-    if (root.tasks.length === 0) return
-    root.nowMs = Date.now()
-    var next = []
-    for (var i = 0; i < root.tasks.length; i++) {
-      var task = root.tasks[i]
-      next.push({
-        id: task.id,
-        title: task.title,
-        seconds: 0,
-        running: task.running,
-        startedAt: task.running ? root.nowMs : 0
-      })
-    }
-    root.setTasks(next)
+    if (root.tracker) root.tracker.resetActiveProject()
   }
 
   function toggleTimerAt(index) {
@@ -274,25 +210,11 @@ Panel {
     root.refocusKeys()
   }
 
-  // Commits the inline editor. An unparseable duration leaves the stored
-  // time untouched rather than silently zeroing a tracked task.
+  // The duration field adds a dated manual ledger entry. It no longer rewrites
+  // a lifetime counter, which would make a past period report unknowable.
   function commitEdit(id, titleText, timeText) {
-    var index = TaskModel.indexOfId(root.tasks, id)
-    if (index < 0) return root.cancelEdit()
-
-    var title = TaskModel.sanitizeTitle(titleText)
-    var parsed = TaskModel.parseDuration(timeText)
-    var changes = { title: title === "" ? "Empty" : title }
-    if (parsed !== null) {
-      changes.seconds = parsed
-      // Rebase a running timer so the edited value is the new starting point
-      // instead of having the current run's elapsed time added back on top.
-      if (root.tasks[index].running) {
-        root.nowMs = Date.now()
-        changes.startedAt = root.nowMs
-      }
-    }
-    root.updateTask(id, changes)
+    if (!root.tracker || TaskModel.indexOfId(root.tasks, id) < 0) return root.cancelEdit()
+    root.tracker.renameAndAddManualTime(id, titleText, timeText)
     root.editingId = ""
     root.refocusKeys()
   }
@@ -390,32 +312,6 @@ Panel {
     if (id !== "") root.removeTask(id)
   }
 
-  // --------------------------------------------------------------- plumbing
-
-  FileView {
-    id: dataFile
-    path: root.dataFilePath
-    atomicWrites: true
-    // Watched so the per-monitor instances stay in sync: a mutation on one
-    // monitor lands in this file, and every other instance picks it up here.
-    // `text()` is stale inside the change signal, so route through reload.
-    watchChanges: true
-    printErrors: false
-    onFileChanged: dataFile.reload()
-    onLoaded: root.loadTasks(text())
-    // First run: the file doesn't exist yet. Without this the panel would
-    // never reach `loaded` and could never create it.
-    onLoadFailed: root.loadTasks("")
-  }
-
-  Timer {
-    interval: 1000
-    repeat: true
-    running: root.anyRunning || root.opened
-    triggeredOnStart: true
-    onTriggered: root.nowMs = Date.now()
-  }
-
   IpcHandler {
     target: "time-tracker"
     function open(): void { root.open() }
@@ -426,9 +322,14 @@ Panel {
     function add(): void { root.addTask() }
     function resetAll(): void { root.resetAllTimers() }
     function total(): string { return root.totalText }
+    function sync(): void { if (root.tracker) root.tracker.requestSync() }
+    function exportWeekly(): void { if (root.tracker) root.tracker.requestExport("weekly") }
+    function exportMonthly(): void { if (root.tracker) root.tracker.requestExport("monthly") }
   }
 
-  Component.onCompleted: Qt.callLater(function() { dataFile.reload() })
+  Component.onCompleted: Qt.callLater(function() {
+    if (root.tracker) root.tracker.configure(root.dataFilePath)
+  })
 
   WidgetButton {
     id: button
@@ -473,6 +374,269 @@ Panel {
         id: contentColumn
         width: Math.max(1, keyCatcher.width)
         spacing: Style.space(8)
+
+        Item {
+          width: parent.width
+          height: Style.space(30)
+
+          Text {
+            anchors.left: parent.left
+            anchors.leftMargin: Style.space(4)
+            anchors.right: projectButton.left
+            anchors.rightMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.activeProject ? root.activeProject.name + "  " + root.activeProjectText : "Loading projects"
+            color: root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.body
+            elide: Text.ElideRight
+          }
+
+          PanelActionButton {
+            id: projectButton
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: "󰆍"
+            tooltipText: root.projectsVisible ? "Hide project settings" : "Manage projects, reports, and Drive"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            bordered: true
+            onClicked: root.toggleProjects()
+          }
+        }
+
+        Column {
+          id: projectSettings
+          visible: root.projectsVisible && root.activeProject
+          width: parent.width
+          spacing: Style.space(6)
+
+          PanelSeparator { foreground: root.contentForeground }
+
+          PanelSectionHeader {
+            text: "PROJECT"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+          }
+
+          TextField {
+            id: projectNameField
+            width: parent.width
+            placeholderText: "Project name"
+            foreground: root.contentForeground
+            font.family: root.contentFontFamily
+          }
+
+          TextField {
+            id: clientNameField
+            width: parent.width
+            placeholderText: "Client name (optional)"
+            foreground: root.contentForeground
+            font.family: root.contentFontFamily
+          }
+
+          TextField {
+            id: companyNameField
+            width: parent.width
+            placeholderText: "Prepared by (optional)"
+            foreground: root.contentForeground
+            font.family: root.contentFontFamily
+          }
+
+          Text {
+            width: parent.width
+            text: "PDF template: " + (root.activeProject.templateId === "summary" ? "Summary" : "Detailed") + " (click to switch)"
+            color: root.mutedForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.bodySmall
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.tracker.updateProject(root.activeProject.id, {
+                templateId: root.activeProject.templateId === "summary" ? "detailed" : "summary"
+              })
+            }
+          }
+
+          Row {
+            spacing: Style.space(12)
+
+            CheckBox {
+              id: weeklyReportBox
+              text: "Weekly reports"
+              checked: root.activeProject.exportWeekly
+              onToggled: if (root.tracker && root.activeProject)
+                root.tracker.updateProject(root.activeProject.id, { exportWeekly: checked })
+            }
+
+            CheckBox {
+              id: monthlyReportBox
+              text: "Monthly reports"
+              checked: root.activeProject.exportMonthly
+              onToggled: if (root.tracker && root.activeProject)
+                root.tracker.updateProject(root.activeProject.id, { exportMonthly: checked })
+            }
+          }
+
+          Text {
+            width: parent.width
+            text: root.tracker && root.tracker.backgroundChecksEnabled
+              ? "Background report checks: on (click to disable)"
+              : "Background report checks: off (click to enable)"
+            color: root.mutedForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.bodySmall
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: if (root.tracker)
+                root.tracker.setBackgroundChecks(!root.tracker.backgroundChecksEnabled)
+            }
+          }
+
+          Row {
+            spacing: Style.space(8)
+
+            PanelActionButton {
+              iconText: "󰄬"
+              tooltipText: "Save project settings"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              bordered: true
+              onClicked: root.saveProjectSettings()
+            }
+
+            PanelActionButton {
+              iconText: "󰐕"
+              tooltipText: "Create project"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              bordered: true
+              onClicked: {
+                root.tracker.createProject("New project")
+                Qt.callLater(root.seedSettingsFields)
+              }
+            }
+
+            PanelActionButton {
+              iconText: "󰉋"
+              tooltipText: "Export previous weekly PDF"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              bordered: true
+              onClicked: root.tracker.requestExport("weekly")
+            }
+
+            PanelActionButton {
+              iconText: "󰉌"
+              tooltipText: "Export previous monthly PDF"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              bordered: true
+              onClicked: root.tracker.requestExport("monthly")
+            }
+          }
+
+          Repeater {
+            model: root.projects
+
+            delegate: Text {
+              id: projectOption
+              required property var modelData
+              width: projectSettings.width
+              text: (modelData.id === root.activeProject.id ? "* " : "  ") + modelData.name
+              color: modelData.id === root.activeProject.id ? root.contentForeground : root.mutedForeground
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.bodySmall
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.tracker.selectProject(projectOption.modelData.id)
+                  Qt.callLater(root.seedSettingsFields)
+                }
+              }
+            }
+          }
+
+          PanelSeparator { foreground: root.contentForeground }
+
+          PanelSectionHeader {
+            text: "GOOGLE DRIVE"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+          }
+
+          TextField {
+            id: driveRemoteField
+            width: parent.width
+            placeholderText: "rclone remote name, e.g. time-tracker"
+            foreground: root.contentForeground
+            font.family: root.contentFontFamily
+          }
+
+          TextField {
+            id: driveFolderField
+            width: parent.width
+            placeholderText: "Drive folder"
+            foreground: root.contentForeground
+            font.family: root.contentFontFamily
+          }
+
+          CheckBox {
+            id: startupSyncBox
+            text: "Sync local state on startup"
+            checked: root.trackerState.drive.syncOnStartup === true
+          }
+
+          Row {
+            spacing: Style.space(8)
+            PanelActionButton {
+              iconText: "󰄬"
+              tooltipText: "Save Drive settings"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              bordered: true
+              onClicked: root.saveProjectSettings()
+            }
+            PanelActionButton {
+              iconText: "󰑓"
+              tooltipText: "Sync local state to Google Drive now"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              bordered: true
+              onClicked: root.tracker.requestSync()
+            }
+            PanelActionButton {
+              iconText: "󰑐"
+              tooltipText: "Retry pending PDF exports"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              bordered: true
+              onClicked: root.tracker.retryReports()
+            }
+          }
+
+          Text {
+            width: parent.width
+            text: root.tracker ? root.tracker.setupStatus + "\n" + root.tracker.syncStatus + "\n" + root.tracker.reportStatus : "Service unavailable"
+            color: root.tracker && (root.tracker.syncError !== "" || root.tracker.backendError !== "" || root.tracker.reportStatus.indexOf("PDF pending:") === 0)
+              ? (root.bar ? root.bar.urgent : Color.urgent) : root.mutedForeground
+            wrapMode: Text.Wrap
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            visible: root.tracker && (root.tracker.syncError !== "" || root.tracker.backendError !== "")
+            width: parent.width
+            text: root.tracker ? (root.tracker.backendError || root.tracker.syncError) : ""
+            color: root.bar ? root.bar.urgent : Color.urgent
+            wrapMode: Text.Wrap
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
 
         ListView {
           id: taskList
@@ -533,7 +697,7 @@ Panel {
             anchors.left: parent.left
             anchors.leftMargin: Style.space(4)
             anchors.verticalCenter: parent.verticalCenter
-            text: "󰄬  Total: " + root.totalText
+            text: "󰄬  Project: " + root.activeProjectText
             color: root.anyRunning ? root.contentForeground : root.mutedForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.body
@@ -546,7 +710,7 @@ Panel {
 
             PanelActionButton {
               iconText: "󰜉"
-              tooltipText: "Reset every timer to 00:00:00"
+              tooltipText: "Reset visible counters for this project"
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
               hoverColor: root.bar ? root.bar.urgent : Color.urgent
@@ -650,7 +814,7 @@ Panel {
     readonly property bool isEditing: root.editingId === task.id
     readonly property bool isExpanded: root.expandedId === task.id && !isEditing
     readonly property bool isRunning: task.running === true
-    readonly property int seconds: TaskModel.elapsedSeconds(task, root.nowMs)
+    readonly property int seconds: root.tracker ? root.tracker.displayTaskSeconds(task) : 0
     // Running tasks read at full strength; idle ones recede into the muted
     // tint so the active timers are obvious at a glance.
     readonly property color rowForeground: isRunning ? root.contentForeground : root.mutedForeground
@@ -770,7 +934,7 @@ Panel {
         // it focus once the items have been laid out.
         onVisibleChanged: if (visible) {
           titleField.text = row.task.title
-          timeField.text = TaskModel.formatDuration(row.seconds)
+          timeField.text = ""
           Qt.callLater(function() {
             titleField.forceActiveFocus()
             titleField.selectAll()
@@ -787,6 +951,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             width: Style.space(86)
             horizontalAlignment: Text.AlignHCenter
+            placeholderText: "Add time"
             foreground: root.contentForeground
             font.family: root.contentFontFamily
             Keys.onPressed: function(event) {
