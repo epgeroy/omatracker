@@ -42,6 +42,242 @@ fn state(home: &Path) -> Value {
 }
 
 #[test]
+fn project_rates_round_trip_and_stay_project_specific() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path();
+    let first = cli(home, &["project", "create", "USD project"])
+        .trim()
+        .to_owned();
+    let task = cli(home, &["task", "add", "Design"]).trim().to_owned();
+    cli(home, &["task", "edit", &task, "--add", "1h30m"]);
+    cli(
+        home,
+        &[
+            "project",
+            "update",
+            &first,
+            "--hourly-rate",
+            "80",
+            "--currency",
+            "usd",
+        ],
+    );
+    let compact: Value =
+        serde_json::from_str(&cli(home, &["status", "--json", "--compact"])).unwrap();
+    let full: Value = serde_json::from_str(&cli(home, &["status", "--json"])).unwrap();
+    assert_eq!(compact["activeProjectEstimate"]["amountText"], "USD 120.00");
+    assert_eq!(
+        compact["activeProjectEstimate"],
+        full["activeProjectEstimate"]
+    );
+    assert_eq!(compact["activeProject"]["rate"]["amountMinor"], 8000);
+    cli(home, &["project", "update", &first, "--name", "Renamed"]);
+    cli(home, &["project", "update", &first, "--hourly-rate", "100"]);
+    let updated: Value =
+        serde_json::from_str(&cli(home, &["status", "--json", "--compact"])).unwrap();
+    assert_eq!(updated["activeProjectEstimate"]["amountText"], "USD 150.00");
+
+    let second = cli(home, &["project", "create", "JPY project"])
+        .trim()
+        .to_owned();
+    cli(
+        home,
+        &[
+            "project",
+            "update",
+            &second,
+            "--hourly-rate",
+            "125",
+            "--currency",
+            "JPY",
+        ],
+    );
+    let task = cli(home, &["task", "add", "Review"]).trim().to_owned();
+    cli(home, &["task", "edit", &task, "--add", "30m"]);
+    let current: Value =
+        serde_json::from_str(&cli(home, &["status", "--json", "--compact"])).unwrap();
+    assert_eq!(current["activeProjectEstimate"]["amountText"], "JPY 63");
+    cli(home, &["project", "select", &first]);
+    let current: Value =
+        serde_json::from_str(&cli(home, &["status", "--json", "--compact"])).unwrap();
+    assert_eq!(current["activeProjectEstimate"]["amountText"], "USD 150.00");
+    cli(home, &["project", "update", &first, "--hourly-rate", "0"]);
+    let current: Value =
+        serde_json::from_str(&cli(home, &["status", "--json", "--compact"])).unwrap();
+    assert_eq!(current["activeProjectEstimate"]["amountText"], "USD 0.00");
+    cli(home, &["project", "update", &first, "--clear-rate"]);
+    let current: Value =
+        serde_json::from_str(&cli(home, &["status", "--json", "--compact"])).unwrap();
+    assert!(current["activeProject"]["rate"].is_null());
+    assert!(current["activeProjectEstimate"].is_null());
+    assert_eq!(current["activeProjectSeconds"], 5400);
+}
+
+#[test]
+fn invalid_rate_updates_leave_the_ledger_untouched() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path();
+    cli(home, &["task", "add", "Existing"]);
+    for flags in [
+        vec!["--hourly-rate", "80"],
+        vec!["--currency", "USD"],
+        vec!["--hourly-rate", "80", "--currency", "USD", "--clear-rate"],
+        vec!["--hourly-rate", "-1", "--currency", "USD"],
+        vec!["--hourly-rate", "1.001", "--currency", "USD"],
+        vec!["--hourly-rate", "80", "--currency", "XYZ"],
+    ] {
+        let before = fs::read(home.join("state.json")).unwrap();
+        let output = cli_command(home)
+            .args([
+                "project",
+                "update",
+                DEFAULT_PROJECT_ID,
+                "--name",
+                "Must not save",
+            ])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!output.stderr.is_empty());
+        assert_eq!(before, fs::read(home.join("state.json")).unwrap());
+    }
+}
+
+#[test]
+fn old_ledgers_default_to_no_rate_and_keep_legacy_time() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path();
+    for ledger in [
+        r#"{"version":1,"tasks":[{"id":"old","title":"Legacy","seconds":5400}]}"#,
+        r#"{"version":2,"activeProjectId":"project-unassigned","projects":[{"id":"project-unassigned","name":"Old"}],"tasks":[{"id":"old","projectId":"project-unassigned","title":"Legacy","legacySeconds":5400}]}"#,
+    ] {
+        fs::write(home.join("state.json"), ledger).unwrap();
+        let current: Value =
+            serde_json::from_str(&cli(home, &["status", "--json", "--compact"])).unwrap();
+        assert!(current["activeProject"]["rate"].is_null());
+        assert!(current["activeProjectEstimate"].is_null());
+        cli(
+            home,
+            &[
+                "project",
+                "update",
+                DEFAULT_PROJECT_ID,
+                "--hourly-rate",
+                "80",
+                "--currency",
+                "USD",
+            ],
+        );
+        let current: Value =
+            serde_json::from_str(&cli(home, &["status", "--json", "--compact"])).unwrap();
+        assert_eq!(current["activeProjectEstimate"]["amountText"], "USD 120.00");
+        cli(home, &["report", "export", "weekly"]);
+        let ledger = state(home);
+        let snapshot: Value = serde_json::from_slice(
+            &fs::read(ledger["reports"][0]["dataPath"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(snapshot["totalSeconds"], 0);
+        assert_eq!(snapshot["estimate"]["amountText"], "USD 0.00");
+    }
+}
+
+#[test]
+fn rate_estimates_follow_running_time_and_reset_counters() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path();
+    let mut ledger = State::default();
+    ledger.projects[0].rate = Some(omatracker::HourlyRate::parse("3600", "USD").unwrap());
+    ledger.tasks.push(Task {
+        id: "running".into(),
+        project_id: DEFAULT_PROJECT_ID.into(),
+        running: true,
+        started_at: now_ms() - 2000,
+        ..Task::default()
+    });
+    fs::write(
+        home.join("state.json"),
+        serde_json::to_vec(&ledger).unwrap(),
+    )
+    .unwrap();
+    let current: Value =
+        serde_json::from_str(&cli(home, &["status", "--json", "--compact"])).unwrap();
+    assert!(current["activeProjectSeconds"].as_i64().unwrap() >= 2);
+    assert_eq!(
+        current["activeProjectEstimate"]["amountMinor"],
+        (current["activeProjectSeconds"].as_i64().unwrap() * 100).to_string()
+    );
+    cli(home, &["task", "stop", "running"]);
+    cli(home, &["task", "reset", "running"]);
+    let current: Value =
+        serde_json::from_str(&cli(home, &["status", "--json", "--compact"])).unwrap();
+    assert_eq!(current["activeProjectEstimate"]["amountText"], "USD 0.00");
+    assert!(!state(home)["entries"].as_array().unwrap().is_empty());
+    cli(home, &["task", "remove", "running"]);
+    assert!(!state(home)["entries"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn queued_rate_snapshots_survive_rate_changes_and_retries() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path();
+    fs::create_dir(home.join("bin")).unwrap();
+    executable(
+        &home.join("bin/typst"),
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then exit 0; fi\nexit 1\n",
+    );
+    executable(&home.join("bin/rclone"), "#!/bin/sh\nexit 0\n");
+    let mut ledger = State::default();
+    ledger.drive.remote = "test".into();
+    ledger.projects[0].rate = Some(omatracker::HourlyRate::parse("80", "USD").unwrap());
+    let period = last_completed_period("weekly", now_ms()).unwrap();
+    ledger.entries.push(Entry {
+        id: "dated".into(),
+        project_id: DEFAULT_PROJECT_ID.into(),
+        started_at: period.start_at + 3600000,
+        ended_at: period.start_at + 9000000,
+        seconds: 5400,
+        ..Entry::default()
+    });
+    fs::write(
+        home.join("state.json"),
+        serde_json::to_vec(&ledger).unwrap(),
+    )
+    .unwrap();
+    cli(home, &["report", "export", "weekly"]);
+    let first = state(home);
+    assert_eq!(first["reports"][0]["status"], "failed");
+    let data_path = first["reports"][0]["dataPath"].as_str().unwrap();
+    let bytes = fs::read(data_path).unwrap();
+    let snapshot: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(snapshot["project"]["rate"]["amountMinor"], 8000);
+    assert_eq!(snapshot["estimate"]["amountText"], "USD 120.00");
+    cli(
+        home,
+        &[
+            "project",
+            "update",
+            DEFAULT_PROJECT_ID,
+            "--hourly-rate",
+            "100",
+            "--currency",
+            "EUR",
+        ],
+    );
+    executable(
+        &home.join("bin/typst"),
+        "#!/bin/sh\nif [ \"$1\" != --version ]; then printf pdf > \"$5\"; fi\n",
+    );
+    cli(home, &["report", "retry"]);
+    assert_eq!(state(home)["reports"][0]["status"], "complete");
+    assert_eq!(bytes, fs::read(data_path).unwrap());
+    cli(home, &["report", "export", "weekly"]);
+    assert_eq!(bytes, fs::read(data_path).unwrap());
+    assert_eq!(state(home)["reports"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn upload_retries_reuse_the_pdf_and_rebuild_a_missing_artifact() {
     let temporary = tempfile::tempdir().unwrap();
     let home = temporary.path();

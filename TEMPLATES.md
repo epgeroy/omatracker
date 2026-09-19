@@ -90,14 +90,16 @@ Available fields (camelCase):
 
 | Object | Fields |
 | --- | --- |
-| Root | `generatedAt`, `project`, `period`, `totalSeconds`, `totalDuration`, `entries` |
-| `project` | `id`, `name`, `clientName`, `companyName`, `logoPath`, `accentColor`, `paper` |
+| Root | `generatedAt`, `project`, `period`, `totalSeconds`, `totalDuration`, `estimate`, `entries` |
+| `project` | `id`, `name`, `clientName`, `companyName`, `logoPath`, `accentColor`, `paper`, `rate` |
 | `period` | `kind`, `label`, `start`, `end`, `startAt`, `endAt` |
 | Each entry | `task`, `note`, `date`, `started`, `ended`, `duration`, `seconds` |
 
 Timestamps are milliseconds since the Unix epoch. Durations are `HH:MM:SS` and
 numeric seconds. `entries` can be empty. See `tests/report-snapshot.json` for a
 complete example. Interpolate data as text rather than evaluating it as source.
+`estimate` and `project.rate` are optional rate data; use
+`data.at("estimate", default: none)` for compatibility with older snapshots.
 
 Use relative local imports and assets, e.g. `#import "helpers.typ": heading`
 and `image("assets/mark.svg")`. Keep dependencies inside the template directory;

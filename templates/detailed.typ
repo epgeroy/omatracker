@@ -37,6 +37,12 @@
     #text(size: 9pt, fill: accent)[TOTAL TIME]
     #linebreak()
     #text(size: 20pt, weight: "bold")[#data.totalDuration]
+    #if data.at("estimate", default: none) != none {
+      linebreak()
+      text(size: 10pt)[Hourly rate: #data.estimate.rateText]
+      linebreak()
+      text(size: 12pt, weight: "bold")[Estimated amount: #data.estimate.amountText]
+    }
   ]
 
   v(16pt)

@@ -73,7 +73,7 @@ enum ProjectCommand {
     Select {
         id: String,
     },
-    Update(ProjectUpdate),
+    Update(Box<ProjectUpdate>),
 }
 
 #[derive(Args)]
@@ -98,6 +98,15 @@ struct ProjectUpdate {
     export_weekly: Option<bool>,
     #[arg(long)]
     export_monthly: Option<bool>,
+    /// Decimal hourly rate; uses the existing currency when omitted.
+    #[arg(long, conflicts_with = "clear_rate")]
+    hourly_rate: Option<String>,
+    /// Supported currency code (for example USD, EUR, JPY, KWD).
+    #[arg(long, requires = "hourly_rate", conflicts_with = "clear_rate")]
+    currency: Option<String>,
+    /// Remove the project's hourly rate.
+    #[arg(long)]
+    clear_rate: bool,
 }
 
 #[derive(Subcommand)]
@@ -226,6 +235,9 @@ fn main() -> Result<()> {
                     logo_path: update.logo_path,
                     export_weekly: update.export_weekly,
                     export_monthly: update.export_monthly,
+                    hourly_rate: update.hourly_rate,
+                    currency: update.currency,
+                    clear_rate: update.clear_rate,
                 },
             )?,
         },

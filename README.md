@@ -98,6 +98,51 @@ Reports, uploads, and diagnostics run in a separate command queue so starting
 and stopping timers stays responsive. Ledger uploads use an immutable temporary
 snapshot, allowing tracking to continue during a transfer.
 
+## Project hourly rates
+
+In project settings, enter an **Hourly rate** and **Currency**, then save.
+Leave the rate empty and save to remove it; `0` is a valid rate. The panel shows
+the selected project's rate and estimated amount, including live timer time.
+
+```bash
+bin/omatracker project update <project-id> --hourly-rate 80.00 --currency USD
+bin/omatracker project update <project-id> --hourly-rate 100.00
+bin/omatracker project update <project-id> --clear-rate
+```
+
+The currency is required when first setting a rate. Subsequent rate updates
+can reuse it. To change currencies, supply both the rate and currency; there
+is no exchange-rate conversion. Currency codes are case-insensitive.
+
+- **2 decimal places:** USD, EUR, GBP, CAD, AUD, NZD, CHF, CNY, INR, BRL, MXN,
+  ARS, COP, PEN, ZAR, NGN, EGP, KES, SEK, NOK, DKK, PLN, CZK, HUF, RON, TRY,
+  UAH, RUB, ILS, AED, SAR, QAR, SGD, HKD, TWD, THB, MYR, IDR, PHP, PKR, BDT.
+- **0 decimal places:** JPY, KRW, CLP, VND.
+- **3 decimal places:** BHD, KWD, OMR, TND.
+
+Use a dot for decimals and no thousands separators. Negative rates, unsupported
+currencies, excess decimal places, and rates over 1,000,000,000 minor units
+(USD 10,000,000.00/hour, for example) are rejected without changing the ledger.
+
+Amounts are `rate × seconds / 3600`, rounded half-up once at the total to the
+currency's minor unit. A rate of USD 80/hour and 1h30m gives USD 120.00. Amounts
+are estimates, without taxes or invoicing. Different projects' currencies are
+never summed together.
+
+The panel follows its visible time counters, including undated legacy time.
+Resetting a counter or deleting a task reduces the panel estimate but retains
+dated entries for reports. Weekly/monthly reports use only entries in that
+period, excluding undated legacy time. Both PDF templates show the rate and
+estimated amount when configured; older snapshots remain time-only.
+
+Changing a rate recalculates the panel estimate and affects reports queued
+after the change, including reports for past periods. Already queued reports
+keep their original rate, currency, and amount, including on retry. Re-exporting
+an already queued period does not replace its snapshot. Existing ledgers load
+without rates until configured.
+
+See [manual rate testing](tests/manual-rates.md) for panel, CLI, and PDF checks.
+
 ## Typst and Google Drive
 
 Time tracking has no external runtime dependency. PDF exports and Drive uploads
@@ -133,8 +178,9 @@ Upload retries reuse a successfully rendered PDF; a missing PDF is rendered
 again. A per-ledger worker lock prevents a retry from resetting an export that
 another process is still handling.
 
-`make check` includes backend regression tests and an isolated QML concurrency
-check using a fake backend. It does not run the panel service against your ledger.
+`make check` includes backend regression tests, an isolated QML concurrency
+check using a fake backend, and rate-service checks against the rebuilt CLI in
+a disposable home. It does not run the panel service against your ledger.
 
 ## Quickshell IPC
 
