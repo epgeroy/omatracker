@@ -11,6 +11,9 @@ use std::process::Command;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
+mod rates;
+pub use rates::{Estimate, HourlyRate};
+
 pub const STATE_VERSION: u32 = 2;
 pub const DEFAULT_PROJECT_ID: &str = "project-unassigned";
 
@@ -35,6 +38,7 @@ pub struct Project {
     pub paper: String,
     pub export_weekly: bool,
     pub export_monthly: bool,
+    pub rate: Option<HourlyRate>,
 }
 
 impl Default for Project {
@@ -181,6 +185,7 @@ pub struct Status {
     pub active_tasks: Vec<TaskView>,
     pub total_tracked_seconds: i64,
     pub active_project_seconds: i64,
+    pub active_project_estimate: Option<Estimate>,
     pub running_timers: usize,
     pub setup_status: String,
     pub report_status: String,
@@ -208,6 +213,7 @@ pub struct PresentationStatus {
     pub active_tasks: Vec<TaskView>,
     pub total_tracked_seconds: i64,
     pub active_project_seconds: i64,
+    pub active_project_estimate: Option<Estimate>,
     pub running_timers: usize,
     pub report_status: String,
     pub sync_status: String,
@@ -223,7 +229,7 @@ pub struct Diagnostics {
     pub background_checks_active: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ProjectChanges {
     pub name: Option<String>,
     pub client_name: Option<String>,
@@ -231,6 +237,9 @@ pub struct ProjectChanges {
     pub template_id: Option<String>,
     pub export_weekly: Option<bool>,
     pub export_monthly: Option<bool>,
+    pub hourly_rate: Option<String>,
+    pub currency: Option<String>,
+    pub clear_rate: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -259,6 +268,7 @@ struct ReportSnapshot {
     period: SnapshotPeriod,
     total_seconds: i64,
     total_duration: String,
+    estimate: Option<Estimate>,
     entries: Vec<ReportEntry>,
 }
 
@@ -272,6 +282,7 @@ struct SnapshotProject {
     logo_path: String,
     accent_color: String,
     paper: String,
+    rate: Option<HourlyRate>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -297,6 +308,7 @@ fn default_project() -> Project {
         paper: "a4".to_owned(),
         export_weekly: true,
         export_monthly: true,
+        rate: None,
     }
 }
 
@@ -891,6 +903,7 @@ pub fn create_project(path: &Path, name: &str) -> Result<String> {
             paper: "a4".to_owned(),
             export_weekly: true,
             export_monthly: true,
+            rate: None,
         };
         state.active_project_id = project.id.clone();
         let id = project.id.clone();
@@ -913,6 +926,12 @@ pub fn select_project(path: &Path, id: &str) -> Result<()> {
 }
 
 pub fn update_project(path: &Path, id: &str, changes: ProjectChanges) -> Result<()> {
+    if changes.clear_rate && (changes.hourly_rate.is_some() || changes.currency.is_some()) {
+        bail!("--clear-rate conflicts with --hourly-rate and --currency")
+    }
+    if changes.currency.is_some() && changes.hourly_rate.is_none() {
+        bail!("--currency requires --hourly-rate")
+    }
     mutate_state(path, |state| {
         let project = state
             .projects
@@ -920,6 +939,16 @@ pub fn update_project(path: &Path, id: &str, changes: ProjectChanges) -> Result<
             .find(|project| project.id == id)
             .with_context(|| format!("project {id} does not exist"))?;
         let previous = project.clone();
+        if changes.clear_rate {
+            project.rate = None;
+        } else if let Some(amount) = changes.hourly_rate {
+            let currency = changes
+                .currency
+                .as_deref()
+                .or_else(|| project.rate.as_ref().map(HourlyRate::currency))
+                .context("--currency is required when first setting an hourly rate")?;
+            project.rate = Some(HourlyRate::parse(&amount, currency)?);
+        }
         if let Some(name) = changes.name {
             project.name = name;
         }
@@ -1165,6 +1194,7 @@ pub fn status(path: &Path) -> Result<Status> {
     Ok(Status {
         total_tracked_seconds: presentation.total_tracked_seconds,
         active_project_seconds: presentation.active_project_seconds,
+        active_project_estimate: presentation.active_project_estimate,
         running_timers: presentation.running_timers,
         report_status: presentation.report_status,
         sync_status: presentation.sync_status,
@@ -1216,6 +1246,10 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
             drive: state.drive.clone(),
         },
         now_ms: now,
+        active_project_estimate: active_project
+            .as_ref()
+            .and_then(|project| project.rate.as_ref())
+            .map(|rate| rate.estimate(active_project_seconds)),
         active_project,
         active_tasks,
         total_tracked_seconds,
@@ -1367,6 +1401,7 @@ fn build_snapshot(
             logo_path: project.logo_path.clone(),
             accent_color: project.accent_color.clone(),
             paper: project.paper.clone(),
+            rate: project.rate.clone(),
         },
         period: SnapshotPeriod {
             kind: period.to_owned(),
@@ -1382,6 +1417,10 @@ fn build_snapshot(
         },
         total_seconds,
         total_duration: format_duration(total_seconds),
+        estimate: project
+            .rate
+            .as_ref()
+            .map(|rate| rate.estimate(total_seconds)),
         entries,
     }
 }

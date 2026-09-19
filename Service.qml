@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import "RateModel.js" as RateModel
 
 // The Rust CLI owns all durable state, report generation, and Drive uploads.
 // This service only serializes UI requests and keeps a presentation snapshot
@@ -19,6 +20,8 @@ Item {
 
   property var state: emptyState()
   property var activeProject: null
+  property var activeProjectEstimate: null
+  property string projectUpdateError: ""
   property var activeTasks: []
   property bool loaded: false
   property real nowMs: Date.now()
@@ -44,6 +47,8 @@ Item {
   readonly property int displayActiveProjectSeconds: activeProjectSeconds + activeProjectRunningTimers * elapsedSinceStatus
   readonly property string totalText: formatDuration(displayTotalSeconds)
   readonly property string activeProjectText: formatDuration(displayActiveProjectSeconds)
+  readonly property string activeProjectAmountText: RateModel.estimateText(
+    activeProject ? activeProject.rate : null, activeProjectEstimate, displayActiveProjectSeconds)
 
   function emptyState() {
     return {
@@ -118,6 +123,10 @@ Item {
       if (exitCode === 0) applyDiagnostics(stdout, context)
       else setupStatus = outputSummary(stdout, stderr) || "Could not check OmaTracker setup"
     } else {
+      if (action === "project-update")
+        projectUpdateError = exitCode === 0 ? "" : outputSummary(stdout, stderr) || "Could not save project settings"
+      if (exitCode === 0 && (action === "project-select" || action === "project-create"))
+        projectUpdateError = ""
       if (exitCode !== 0) backendError = outputSummary(stdout, stderr) || "OmaTracker command failed"
       refresh()
       if (action === "report-timer") enqueue("diagnostics", ["diagnostics"], { checkReports: true })
@@ -155,6 +164,7 @@ Item {
       if (!next || !next.state) throw new Error("status output has no state")
       state = next.state
       activeProject = next.activeProject || null
+      activeProjectEstimate = next.activeProjectEstimate || null
       activeTasks = Array.isArray(next.activeTasks) ? next.activeTasks : []
       totalTrackedSeconds = Math.max(0, Math.floor(Number(next.totalTrackedSeconds) || 0))
       activeProjectSeconds = Math.max(0, Math.floor(Number(next.activeProjectSeconds) || 0))
@@ -201,6 +211,11 @@ Item {
     if (changes.templateId !== undefined) args.push("--template-id", String(changes.templateId))
     if (changes.exportWeekly !== undefined) args.push("--export-weekly", String(changes.exportWeekly))
     if (changes.exportMonthly !== undefined) args.push("--export-monthly", String(changes.exportMonthly))
+    if (changes.clearRate === true) args.push("--clear-rate")
+    else {
+      if (changes.hourlyRate !== undefined) args.push("--hourly-rate", String(changes.hourlyRate))
+      if (changes.currency !== undefined) args.push("--currency", String(changes.currency))
+    }
     enqueue("project-update", args, {})
   }
 

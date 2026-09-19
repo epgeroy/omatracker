@@ -117,6 +117,8 @@ Panel {
     projectNameField.text = root.activeProject.name
     clientNameField.text = root.activeProject.clientName
     companyNameField.text = root.activeProject.companyName
+    hourlyRateField.text = root.tracker.activeProjectEstimate ? root.tracker.activeProjectEstimate.hourlyRate : ""
+    currencyField.text = root.activeProject.rate ? root.activeProject.rate.currency : ""
     weeklyReportBox.checked = root.activeProject.exportWeekly
     monthlyReportBox.checked = root.activeProject.exportMonthly
     driveRemoteField.text = root.trackerState.drive.remote
@@ -130,11 +132,17 @@ Panel {
 
   function saveProjectSettings() {
     if (!root.tracker || !root.activeProject) return
-    root.tracker.updateProject(root.activeProject.id, {
+    var changes = {
       name: projectNameField.text,
       clientName: clientNameField.text,
       companyName: companyNameField.text
-    })
+    }
+    if (hourlyRateField.text.trim() === "") changes.clearRate = true
+    else {
+      changes.hourlyRate = hourlyRateField.text.trim()
+      changes.currency = currencyField.text.trim().toUpperCase()
+    }
+    root.tracker.updateProject(root.activeProject.id, changes)
     root.tracker.updateDrive(driveRemoteField.text, driveFolderField.text, startupSyncBox.checked)
   }
 
@@ -413,6 +421,17 @@ Panel {
           }
         }
 
+        Text {
+          visible: root.tracker.activeProjectEstimate !== null
+          width: parent.width
+          text: root.tracker.activeProjectEstimate
+            ? root.tracker.activeProjectEstimate.rateText + "  ·  Estimated: " + root.tracker.activeProjectAmountText : ""
+          color: root.mutedForeground
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.Wrap
+        }
+
         Column {
           id: projectSettings
           visible: root.projectsVisible && root.activeProject
@@ -449,6 +468,44 @@ Panel {
             placeholderText: "Prepared by (optional)"
             foreground: root.contentForeground
             font.family: root.contentFontFamily
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+            TextField {
+              id: hourlyRateField
+              width: parent.width - currencyField.width - parent.spacing
+              placeholderText: "Hourly rate (optional)"
+              foreground: root.contentForeground
+              font.family: root.contentFontFamily
+            }
+            TextField {
+              id: currencyField
+              width: Style.space(110)
+              placeholderText: "USD / EUR"
+              foreground: root.contentForeground
+              font.family: root.contentFontFamily
+            }
+          }
+
+          Text {
+            width: parent.width
+            text: "Leave rate empty to remove it. New reports use the current rate; queued reports keep their amounts."
+            color: root.mutedForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
+          }
+
+          Text {
+            visible: root.tracker.projectUpdateError !== ""
+            width: parent.width
+            text: root.tracker.projectUpdateError
+            color: root.bar ? root.bar.urgent : Color.urgent
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
           }
 
           Text {
