@@ -31,6 +31,9 @@ with tempfile.TemporaryDirectory(prefix="omatracker-install-") as temporary:
     instructions = (skill / "references" / "installation.md").read_text()
     assert str(datadir / "bin" / "omatracker") in instructions
     assert (skill / "AGENT_API.md").is_file()
+    assert "work.record-batch" in (skill / "AGENT_API.md").read_text()
+    assert "work.record-batch" in (skill / "references" / "workflows.md").read_text()
+    assert "work.record-batch" in json.loads(cli("agent", "help"))["data"]["actions"]
     assert not (work / "ledger.json").exists()
     assert not (work / "ledger.json.lock").exists()
 

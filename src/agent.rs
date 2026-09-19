@@ -12,6 +12,7 @@ pub const ACTIONS: &[&str] = &[
     "help",
     "request.key",
     "request.keys",
+    "work.record-batch",
     "data.clear",
     "context",
     "issuer.get",
@@ -137,6 +138,7 @@ pub struct Input {
     pub add: Option<String>,
     pub dry_run: bool,
     pub include_drive: bool,
+    pub pricing: Option<crate::workflows::Pricing>,
 }
 
 const MAX_REQUEST_KEYS: usize = 64;
@@ -246,7 +248,7 @@ fn range(state: &State, i: &Input, project: &str) -> Result<(i64, i64)> {
     )
 }
 
-fn read(action: &str, state: &State, i: &Input) -> Result<Value> {
+pub(crate) fn read(action: &str, state: &State, i: &Input) -> Result<Value> {
     Ok(match action {
         "context" => {
             json!({"projects": state.projects.iter().filter(|p| !state.billing.archived_projects.contains(&p.id)).collect::<Vec<_>>(), "runningTasks": state.tasks.iter().filter(|t| t.running).collect::<Vec<_>>(),
@@ -375,7 +377,7 @@ const READS: &[&str] = &[
     "repository.resolve",
 ];
 
-fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Value> {
+pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Value> {
     if let Some(expected) = &i.entity_revision {
         if i.revision.is_some() {
             bail!("INVALID_INPUT: use entityRevision or revision, not both")
@@ -637,6 +639,7 @@ fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Val
             crate::task_rates::task_json(state, &state.tasks[index])
         }
         "entry.add" => {
+            let explicit_rate = i.pricing.as_ref().map(|p| p.rate()).transpose()?.flatten();
             let task = state
                 .tasks
                 .iter()
@@ -671,6 +674,20 @@ fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) -> Result<Val
                 (end - start) / 1000,
                 i.note.as_deref().unwrap_or("Manual entry"),
             );
+            if let Some(rate) = explicit_rate {
+                // Only entries appended by this transaction are priced. No future policy
+                // or previously recorded entry is changed, even across rate boundaries.
+                for entry in &state.entries[offset..] {
+                    state.billing.entries.insert(
+                        entry.id.clone(),
+                        b::EntryBilling {
+                            resolved: true,
+                            rate: Some(rate.clone()),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
             json!({"entries":state.entries[offset..].iter().map(|e| json!({"entry":e,"billing":state.billing.entries[&e.id]})).collect::<Vec<_>>()})
         }
         "entry.correct" => json!(b::correct(
@@ -1126,6 +1143,9 @@ pub fn execute(path: &Path, action: &str, input: Value, key: Option<&str>) -> Re
     if action == "request.keys" {
         return request_keys(input, key);
     }
+    if action == "work.record-batch" {
+        return crate::workflows::record_batch(path, input, key);
+    }
     let args: Input =
         serde_json::from_value(input.clone()).context("INVALID_INPUT: malformed request")?;
     if action == "request.key" {
@@ -1155,6 +1175,14 @@ pub fn execute(path: &Path, action: &str, input: Value, key: Option<&str>) -> Re
     }
     if args.apply_existing && !matches!(action, "task.rate" | "task.update") {
         bail!("INVALID_INPUT: applyExisting is supported by task.rate and task.update only")
+    }
+    if args.pricing.is_some() && action != "entry.add" {
+        bail!("INVALID_INPUT: pricing is supported by entry.add and work.record-batch only")
+    }
+    if args.pricing.is_some()
+        && (args.rate.is_some() || args.currency.is_some() || args.no_rate || args.inherit_rate)
+    {
+        bail!("INVALID_INPUT: pricing cannot be combined with other rate options")
     }
     if key.is_some_and(|k| k.is_empty() || k.len() > 200) {
         bail!("INVALID_INPUT: retry key must have 1–200 characters")
@@ -1314,6 +1342,9 @@ pub fn run(path: &Path, cli: Cli) -> Result<Value> {
 }
 
 pub fn error(error: &anyhow::Error) -> Value {
+    if let Some(partial) = error.downcast_ref::<crate::workflows::PartialFailure>() {
+        return partial.0.clone();
+    }
     let message = format!("{error:#}");
     let code = message
         .split(':')

@@ -62,6 +62,12 @@ Respect a user-specified ledger using `--data-path`. No MCP server is required.
   historical pricing. If billable work was expected and pricing is unclear, ask
   one focused rate/scope question. Subtraction targets an identified entry;
   ask which entry/date if ambiguous. Record reasons and use revisions for corrections.
+- **Many dated tasks:** use `work.record-batch` with explicit project, unique item
+  refs, new task titles, dated entries, pricing mode, and summary range. Confirm
+  explicit entry pricing versus historical inheritance; missing billing intent is
+  not a default. Retain one workflow key and ledger path. Use `dryRun: true` to
+  inspect planned billing; resume partial failures with the original input/key.
+  The helper returns IDs, billing outcomes, progress, and a Rust-calculated summary.
 - **Invoices:** require a project/range `summary` before creation unless an equivalent,
   still-current summary is available; explain exclusions. Create/refresh draft, preview PDF,
   issue when requested, render, then upload when requested. Report invoice number,

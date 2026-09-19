@@ -1,6 +1,20 @@
 # Plan 03: Bulk dated-work helper
 
-Status: Proposed. Priority: P1. Domain-specific CLI workflow.
+Status: Implemented. Priority: P1. Domain-specific CLI workflow.
+
+## Contract review decisions
+
+- `work.record-batch` supports 1–50 new tasks and up to 200 dated intervals,
+  with required explicit/historical-inheritance pricing and a project-range summary.
+- Explicit pricing is entry-scoped at creation, using `entry.add.pricing`; it
+  handles already-rated history without backfill skips or future task overrides.
+- Plan 02's journal ships with this consumer in `src/workflows.rs`. The detailed
+  journal is stored in the ledger receipt map; a content-free sidecar ledger-token
+  binding survives clear/reset to reject stale workflow identities. See the revised
+  [journal contract](workflow-journal.md) for the storage decision and ordering.
+- Full preflight simulates existing mutation/billing paths on an in-memory copy.
+  Recovery uses retained step keys, explicit project targeting and no global
+  revision guard. Partial errors retain successful work and expose resume state.
 
 ## Goal and evidence
 
@@ -13,10 +27,10 @@ entry additions, six rate applications, and one summary. Each six-call group was
 already parallelized. The response took approximately 85 seconds, with about two
 seconds spent inside tools after overlapping intervals were merged.
 
-## Proposed contract
+## Implemented contract
 
-Introduce a domain workflow, provisionally named `work.record-batch`. This name
-and the following fields are proposals, not commands currently supported.
+The domain workflow is `work.record-batch`. The complete supported contract,
+bounds and retry semantics are documented in `AGENT_API.md`.
 
 ```json
 {
@@ -44,10 +58,8 @@ mechanism. Support explicit pricing and historical-inheritance modes. Reject a
 missing or ambiguous pricing mode rather than deciding billing intent implicitly.
 Do not silently change the project's historical rate or future rate policy.
 
-If explicit pricing uses `task.rate` backfill internally, document that it also
-creates a task-rate override. Decide during contract review whether to expose that
-future policy explicitly or implement scoped entry pricing. Do not hide this side
-effect behind a generic “use project rate” label.
+Explicit pricing uses scoped entry pricing rather than `task.rate` backfill.
+There is no task-rate override or future-policy side effect.
 
 ## Execution and recovery model
 
@@ -71,18 +83,19 @@ calculations.
 
 ## Implementation steps and files
 
-- [ ] Finalize request/response fields, bounds, future-rate semantics, and partial
+- [x] Finalize request/response fields, bounds, future-rate semantics, and partial
   failure behavior in `AGENT_API.md` before implementation.
-- [ ] Add dispatch in `src/agent.rs` and a dedicated workflow module if appropriate;
+- [x] Add dispatch in `src/agent.rs` and a dedicated workflow module if appropriate;
   wire it through `src/lib.rs` rather than expanding unrelated UI code.
-- [ ] Integrate Plan 02's durable workflow journal and exact-retry behavior.
-- [ ] Reuse `src/task_rates.rs` and `src/billing.rs` semantics after checking their
+- [x] Integrate Plan 02's durable workflow journal and exact-retry behavior.
+- [x] Reuse `src/task_rates.rs` and `src/billing.rs` semantics after checking their
   current APIs and graph impact. Do not duplicate money arithmetic.
-- [ ] Return `ref`, task/entry IDs, billing outcome, skipped adjustments, completion
+- [x] Return `ref`, task/entry IDs, billing outcome, skipped adjustments, completion
   status, resume identity, and summary. Make verbose detail opt-in if necessary.
-- [ ] Add a “many dated tasks” recipe to `skills/omatracker/references/workflows.md`.
-- [ ] Add focused integration tests, provisionally `tests/workflows.rs`.
-- [ ] Update embedded skill delivery and installation checks as required.
+- [x] Add a “many dated tasks” recipe to `skills/omatracker/references/workflows.md`.
+- [x] Add focused integration tests in `tests/workflows.rs` and recovery tests in
+  `src/workflows/tests.rs`.
+- [x] Update embedded skill delivery and installation checks as required.
 
 ## Verification and acceptance criteria
 
@@ -104,6 +117,21 @@ calculations.
 Run new workflow tests with existing task-rate, invoice, and lifecycle regression
 tests. Measure tool calls, model rounds, helper wall time, and correctness separately.
 Do not promise an elapsed-time speedup solely from fewer calls.
+
+Verification: full `make check` passes on the combined Plan 01/02/03/05 tree:
+115 Rust tests, formatting, Clippy (`-D warnings`), five Typst fixtures, plugin
+validation, QML service tests, UI tests and isolated installation/embedded docs.
+The additional `python tests/ui-check.py --wayland` passes the popup case skipped
+by the headless suite. The six-task integration case verifies 86,400 seconds,
+USD 120,000 minor units, no non-billable/unresolved exclusions and duplicate-free
+replay. Recovery covers all 27 prepared/mutated/checkpointed step windows, final
+response loss, storage failure, reset/replacement and concurrent resumes.
+
+Call accounting: one workflow execution call after discovery/key preparation;
+12 internal mutations for six single-entry tasks (entry pricing is atomic with
+entry creation). This replaces per-task model interaction with one execution
+round. The test reports helper wall time separately; model latency is not measured
+and no end-to-end elapsed-time speedup is claimed.
 
 ## Dependencies and implementation preflight
 

@@ -30,8 +30,8 @@ After any write starts, replay uncertain steps with their original resolved key 
 exact input; do not rerun `request.keys` or `--key auto` to replace those keys. An
 idempotency conflict means the request changed; inspect it rather than silently
 starting another write. A retained key is not enough if the original arguments were
-lost. Automated durable recovery belongs to the workflow journal in Plan 03, which
-must be persisted before the first mutation; it does not make a batch atomic.
+lost. For many new dated tasks, `work.record-batch` persists a durable workflow
+journal before its first task/entry mutation; it does not make a batch atomic.
 
 For invoices this reduces four dedicated preparation rounds to at most one; for six
 tasks it reduces three six-call generation stages to one batch call. Report model
@@ -171,6 +171,51 @@ draft using its revision, and preview the corrected draft once.
 For subtraction, inspect `entry.list`, identify
 the intended entry, and send `entry.correct` with signed seconds, revision, reason.
 Use the returned correction ID with `entry.undo` and the current entry revision.
+
+## Many dated tasks in one request
+
+Discover the explicit project ID and resolve all dates/timezones and pricing intent
+first. Generate one `request.key`, retaining it with the ledger path and JSON input.
+For independent operations outside a batch, prepare known step keys together rather
+than waiting for dependent IDs just to generate the next key.
+
+Submit `agent work.record-batch --input-file batch.json --key RETAINED_KEY`:
+
+```json
+{
+  "project": "PROJECT_ID",
+  "items": [
+    {"ref":"mapping","newTask":{"title":"Webhook mapping"},
+     "entries":[{"start":"2026-09-01T09:00:00Z","end":"2026-09-01T13:00:00Z"}]},
+    {"ref":"testing","newTask":{"title":"Webhook tests"},
+     "entries":[{"start":"2026-09-15T09:00:00Z","end":"2026-09-15T13:00:00Z"}]}
+  ],
+  "pricing":{"mode":"explicit","rate":"50","currency":"USD"},
+  "summary":{"from":"2026-09-01","to":"2026-09-16"}
+}
+```
+
+Use `{"mode":"historical-inheritance"}` to honor effective-dated history instead.
+Explicit pricing applies only to submitted entries, even if history has another
+rate; future task/project rates are unchanged. Zero is billable at zero. The batch
+supports new tasks only, up to 50 items and 200 total entries, each at most 31 days.
+For validation only, add `dryRun: true` (no key required) and inspect billing
+segments and summary exclusions. Remove it for execution. A dry run does not pin
+historical rates; each actual entry captures history when written.
+
+The helper creates tasks, carries IDs locally, records/prices entries, and returns
+one project-range summary. Inspect `items`, `skippedAdjustments`, `summary.excluded`,
+and each currency's amount; the range may include work outside this batch. Six
+four-hour entries at USD 50 should report 24 hours and USD 1,200 on an empty range.
+There is no need for separate task/entry/rate calls or a routine second summary.
+
+On failure, inspect `data.status: partial`, item progress, `failedStep`, and
+`resume`. Completed and receipt-confirmed `recordedSteps` remain saved. Resolve the
+cause and resend the same input with the same key against the same ledger; do not
+delete successes, invent replacement keys, or change input to evade a conflict.
+Completed retries return the captured summary; query a fresh summary only when
+later changes or unexpected exclusions warrant it. Fewer model/tool round trips
+do not by themselves establish an elapsed-time speedup.
 
 ## Invoice preparation
 

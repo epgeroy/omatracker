@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Billing {
+    /// Assigned on first durable workflow; clearing the ledger invalidates it.
+    pub ledger_id: String,
     pub initialized: bool,
     pub revision: u64,
     pub issuer: Party,

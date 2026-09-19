@@ -428,6 +428,7 @@ pub fn clear(path: &Path, dry_run: bool, include_drive: bool) -> Result<Value> {
     // report workers and ledger snapshot uploads from recreating deleted remote files.
     let mut workers = Vec::new();
     for suffix in [
+        "workflows-worker",
         "agent-external",
         "invoices-worker",
         "reports",

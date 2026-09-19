@@ -21,6 +21,7 @@ mod rates;
 pub mod skills;
 mod task_rates;
 pub mod templates;
+mod workflows;
 pub use rates::{Estimate, HourlyRate};
 
 pub const STATE_VERSION: u32 = 4;

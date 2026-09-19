@@ -1,6 +1,6 @@
 # Plan 02: Retry keys and model round trips
 
-Status: Phases A/B implemented; Phase C contract defined, runtime deferred to Plan 03.
+Status: Phases A/B implemented; Phase C implemented with the Plan 03 consumer.
 Priority: P1. Skill improvements followed by a small CLI extension.
 
 ## Goal and evidence
@@ -61,16 +61,15 @@ does not replace ledger receipts or claim multi-command atomicity.
 - [x] Return compact labeled results rather than repeating full request metadata.
 - [x] Define the reusable journal format with Plan 03, including versioning,
   same-ledger resume checks, persistence ordering, and changed-input rejection.
-- [ ] Implement journal support alongside its first real workflow consumer in
+- [x] Implement journal support alongside its first real workflow consumer in
   Plan 03, avoiding an unused generic execution framework.
 - [x] Update embedded skill references and isolated installation coverage.
 
-The Phase C contract is in [workflow-journal.md](workflow-journal.md). Its runtime
-acceptance criteria (interrupted journal update, changed-input and wrong-ledger
-resume) are deferred to the Plan 03 consumer. Review found that existing storage
-has no persistent ledger-incarnation identity and `atomic_write` does not sync the
-parent directory; the contract records both prerequisites rather than claiming
-durable workflow recovery from key generation alone.
+The Phase C implementation contract is in [workflow-journal.md](workflow-journal.md).
+Plan 03 adds the persistent ledger-incarnation identity, directory-sync barriers,
+durable journal and interrupted-write/changed-input/wrong-ledger recovery tests.
+The reviewed implementation keeps detailed journals in the ledger receipt store
+and content-free reset-detection bindings in a ledger-scoped sidecar directory.
 
 ## Files and integration points
 

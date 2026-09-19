@@ -18,6 +18,87 @@ use the versioned `agent` interface.
 
 ## Conventions
 
+### Bulk dated work: `work.record-batch`
+
+Create new tasks and dated entries in one execution call, with a retained workflow
+key from `request.key`. Supply the same input and resolved `--key` to resume.
+
+```json
+{
+  "project": "PROJECT_ID",
+  "items": [{
+    "ref": "webhook-mapping",
+    "newTask": {"title": "Webhook event mapping"},
+    "entries": [{"start": "2026-09-01T09:00:00Z", "end": "2026-09-01T13:00:00Z"}]
+  }],
+  "pricing": {"mode": "explicit", "rate": "50", "currency": "USD"},
+  "summary": {"from": "2026-09-01", "to": "2026-09-16"}
+}
+```
+
+- `project`, `items`, `pricing`, and `summary` are required. Only new tasks are
+  supported. Project selection is explicit and independent of the UI/repository.
+- Bounds: 1–50 items, 1–200 entries per item and at most 200 entries total. Unique
+  `ref` values contain 1–64 ASCII letters, digits, `-` or `_`. Titles must be
+  nonblank, single-line text of at most 160 characters; optional entry `note` is
+  single-line text of at most 240 characters. Unknown fields are rejected.
+- Entries require `start` and `end` RFC3339 timestamps at whole-second precision,
+  after the epoch, with positive duration of at most 31 days, ending no later than
+  now. Summary dates use the project's timezone and an exclusive `to`.
+- Pricing must be either `{"mode":"explicit","rate":"50","currency":"USD"}`
+  or `{"mode":"historical-inheritance"}`. Extra rate fields in inheritance mode
+  are rejected. Explicit zero is a billable zero rate, not missing pricing.
+- Explicit pricing is **entry-scoped**, captured atomically when each entry is
+  created. It neither backfills other work nor creates a task-rate override nor
+  changes project history/future policy. This is also available on `entry.add`
+  through the same optional `pricing` object. Omitted `entry.add.pricing` retains
+  the existing historical task/project inheritance behavior.
+- `dryRun: true` validates every item and simulates the existing Rust mutation and
+  summary paths in memory. It requires no key and writes no ledger or journal
+  (a ledger lock file may be created). It returns planned actions and per-interval
+  billing segments, including unresolved/non-billable historical time. Dry-run
+  estimates are not reservations: inheritance uses history at each actual write.
+
+Execution is sequential and resumable, **not a transaction across the batch**.
+Before the first task is created, a versioned journal reserves the workflow key in
+the ledger's existing receipt store, recording the normalized request/fingerprint,
+canonical ledger path/incarnation, every step key, arguments, and task-ID dependencies. Resolved
+arguments are saved before a dependent write. Each mutation uses the existing
+atomic receipt path; an interrupted uncheckpointed mutation replays its original
+key. Journal checkpoints retain returned IDs, revisions, and completion. A separate
+workflow-worker lock serializes batch coordinators without holding the ledger lock
+across nested calls; unrelated ledger edits need no global revision match.
+
+Keys are ledger-local. Resume must use the original ledger and retained request:
+copied/moved journals reject a different canonical path with `WORKFLOW_LEDGER_MISMATCH`.
+Changing normalized input under a retained key gives `IDEMPOTENCY_CONFLICT`. An
+unrelated ledger with no such journal treats a key as new; always retain the ledger
+path with the key. The first workflow assigns `billing.ledgerId`, preserved by
+ordinary writes and invalidated by clear-all. A content-free binding under
+`<ledger>.workflows/<SHA-256-of-key>.json` retains only its format version and opaque
+ledger token. It survives clear-all, rejecting old keys after same-path reset or
+replacement. Task names, input and results live solely in ledger journals/receipts
+and their explicit backups. Removing bindings discards this reset protection.
+Restores must keep the ledger and receipt/journal state consistent.
+
+Success returns `data.status: "completed"`, `resume: {key, ledger}`, per-item
+`ref`, `taskId`, `entries` (IDs, seconds and captured billing), completed/pending
+step counts, and `skippedAdjustments: []` (pricing is applied at creation). It also
+returns one authoritative project-range `summary` with `summaryRevision`, including
+other work in that range. Exact completed retries return the captured result with
+`replayed: true`, after checking created targets still exist. It is a historical
+completion snapshot; use `summary` again if later edits need to be reflected.
+
+On a step/verification failure the CLI exits nonzero with `ok: false`, the original
+`error`, and `data.status: "partial"`, item progress, `failedStep`, and the resume
+identity. Receipt-confirmed but uncheckpointed writes appear as `recorded` steps;
+they still need replay/checkpointing. Successfully recorded work is retained. Retry
+the original request/key after resolving the cause; never generate replacement
+keys to work around partial failure. Preflight errors create no tasks or journal.
+Removed targets produce `REQUEST_TARGET_REMOVED`; they are never recreated by a
+retry. If storage itself is unavailable, partial reporting may only include the
+last known checkpoint; retry against the original ledger to reconcile receipts.
+
 ### Global skill installation
 
 Install the CLI from its repository with `make install` first (or `make install-bin`
@@ -183,11 +264,11 @@ four. Six tasks with create/add-entry/price-entry steps can prepare all 18 keys 
 one call (e.g. `task-1:create`, `task-1:add-entry`, `task-1:price-entry`, through task 6).
 This removes key-generation model turns; it does not batch or eliminate the writes.
 
-Durable multi-step workflow execution is specified for Plan 03 in the source
-repository's `plans/workflow-journal.md` (a development plan, not an installed skill
-reference); `request.keys` alone is not a workflow executor or
-durable journal. The journal implementation and interruption/resume tests ship with
-that first consumer, not with key generation.
+For multiple new dated tasks, use `work.record-batch` with one retained workflow
+key; it owns durable planning, dependent IDs, receipts and the final summary.
+`request.keys` alone does not execute or journal mutations. The source repository's
+`plans/workflow-journal.md` documents the implementation; the installed contract
+and recipe are in this document and `references/workflows.md`.
 
 ## Operations
 
@@ -319,7 +400,7 @@ settings and the current rate, not tasks, entries, invoices, or rate history.
 | `task.remove` / `task.delete` | `id` (`entityRevision`); stop its timer, remove the task, retain dated entries |
 | `task.start` / `task.stop` | `id` (task ID) |
 | `entry.list` | `project` (`id` entry ID, `from` + `to`, pagination) |
-| `entry.add` | `id` task ID, `start`, either `end` or `seconds` (`note`) |
+| `entry.add` | `id` task ID, `start`, either `end` or `seconds` (`note`, `pricing` for entry-scoped explicit pricing or historical inheritance) |
 | `entry.correct` | `id` entry ID, `revision`, signed `delta`, `reason` |
 | `entry.undo` | `id` correction ID, current **entry** `revision`, `reason` |
 | `summary` | `project`, `from`, `to` |
