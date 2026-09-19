@@ -1,4 +1,4 @@
-.PHONY: backend check template-check qml-check
+.PHONY: backend check template-check qml-check ui-check
 
 backend:
 	cargo build --release
@@ -11,6 +11,10 @@ check:
 	$(MAKE) template-check
 	omarchy plugin validate .
 	$(MAKE) qml-check
+	$(MAKE) ui-check
+
+ui-check:
+	python tests/ui-check.py
 
 qml-check:
 	@temporary=$$(mktemp -d); \

@@ -17,6 +17,7 @@ Item {
     id: tracker
     dataPath: root.work + "/unused-ledger.json"
     backendCommand: root.fakeBackend
+    feedbackEnabled: false
   }
 
   BackendQueue {

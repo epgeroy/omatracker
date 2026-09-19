@@ -11,6 +11,8 @@ use std::process::Command;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
+pub mod feedback;
+
 pub const STATE_VERSION: u32 = 2;
 pub const DEFAULT_PROJECT_ID: &str = "project-unassigned";
 
@@ -206,6 +208,8 @@ pub struct PresentationStatus {
     pub now_ms: i64,
     pub active_project: Option<Project>,
     pub active_tasks: Vec<TaskView>,
+    pub running_tasks: Vec<TaskView>,
+    pub preferences: feedback::Preferences,
     pub total_tracked_seconds: i64,
     pub active_project_seconds: i64,
     pub running_timers: usize,
@@ -1180,7 +1184,9 @@ pub fn status(path: &Path) -> Result<Status> {
 }
 
 pub fn presentation_status(path: &Path) -> Result<PresentationStatus> {
-    Ok(build_presentation_status(&locked_state(path)?, now_ms()))
+    let mut status = build_presentation_status(&locked_state(path)?, now_ms());
+    status.preferences = feedback::preferences(path)?;
+    Ok(status)
 }
 
 fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
@@ -1201,7 +1207,7 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
     let active_tasks = state
         .tasks
         .iter()
-        .zip(totals)
+        .zip(totals.iter().copied())
         .filter(|(task, _)| task.project_id == state.active_project_id)
         .map(|(task, display_seconds)| TaskView {
             display_seconds,
@@ -1218,6 +1224,17 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
         now_ms: now,
         active_project,
         active_tasks,
+        running_tasks: state
+            .tasks
+            .iter()
+            .zip(totals)
+            .filter(|(task, _)| task.running)
+            .map(|(task, display_seconds)| TaskView {
+                task: task.clone(),
+                display_seconds,
+            })
+            .collect(),
+        preferences: feedback::Preferences::default(),
         total_tracked_seconds,
         active_project_seconds,
         running_timers: state.tasks.iter().filter(|task| task.running).count(),

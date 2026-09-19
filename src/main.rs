@@ -35,6 +35,11 @@ enum Commands {
     },
     /// Print dependency and background-scheduler diagnostics as JSON.
     Diagnostics,
+    /// Claim an hourly work milestone, or save local feedback preferences.
+    Feedback {
+        #[command(subcommand)]
+        command: FeedbackCommand,
+    },
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
@@ -69,6 +74,19 @@ enum ProjectCommand {
         id: String,
     },
     Update(ProjectUpdate),
+}
+
+#[derive(Subcommand)]
+enum FeedbackCommand {
+    Poll,
+    Configure {
+        #[arg(long, action = ArgAction::Set)]
+        hourly_click: bool,
+        #[arg(long, default_value_t = 25)]
+        volume: u8,
+        #[arg(long, action = ArgAction::Set)]
+        reduced_motion: bool,
+    },
 }
 
 #[derive(Args)]
@@ -174,6 +192,17 @@ fn main() -> Result<()> {
             }
         }
         Commands::Diagnostics => println!("{}", serde_json::to_string(&diagnostics(&data_path))?),
+        Commands::Feedback { command } => match command {
+            FeedbackCommand::Poll => println!(
+                "{}",
+                serde_json::to_string(&omatracker::feedback::poll(&data_path)?)?
+            ),
+            FeedbackCommand::Configure {
+                hourly_click,
+                volume,
+                reduced_motion,
+            } => omatracker::feedback::configure(&data_path, hourly_click, volume, reduced_motion)?,
+        },
         Commands::Project { command } => match command {
             ProjectCommand::Create { name } => println!("{}", create_project(&data_path, &name)?),
             ProjectCommand::Select { id } => select_project(&data_path, &id)?,

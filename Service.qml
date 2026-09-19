@@ -20,6 +20,12 @@ Item {
   property var state: emptyState()
   property var activeProject: null
   property var activeTasks: []
+  property var runningTasks: []
+  property var preferences: ({ hourlyClick: true, volume: 25, reducedMotion: false })
+  property bool feedbackEnabled: true
+  property string feedbackError: ""
+  signal actionFinished(string action, bool success)
+  signal hourReached(int hours)
   property bool loaded: false
   property real nowMs: Date.now()
   property real statusSnapshotMs: nowMs
@@ -91,6 +97,7 @@ Item {
     diagnosticsReady = false
     foregroundQueue.reset()
     backgroundQueue.reset()
+    feedbackQueue.reset()
     refresh()
     enqueue("diagnostics", ["diagnostics"], {})
   }
@@ -118,7 +125,8 @@ Item {
       if (exitCode === 0) applyDiagnostics(stdout, context)
       else setupStatus = outputSummary(stdout, stderr) || "Could not check OmaTracker setup"
     } else {
-      if (exitCode !== 0) backendError = outputSummary(stdout, stderr) || "OmaTracker command failed"
+      backendError = exitCode !== 0 ? outputSummary(stdout, stderr) || "OmaTracker command failed" : ""
+      actionFinished(action, exitCode === 0)
       refresh()
       if (action === "report-timer") enqueue("diagnostics", ["diagnostics"], { checkReports: true })
     }
@@ -156,6 +164,8 @@ Item {
       state = next.state
       activeProject = next.activeProject || null
       activeTasks = Array.isArray(next.activeTasks) ? next.activeTasks : []
+      runningTasks = Array.isArray(next.runningTasks) ? next.runningTasks : []
+      preferences = next.preferences || ({ hourlyClick: true, volume: 25, reducedMotion: false })
       totalTrackedSeconds = Math.max(0, Math.floor(Number(next.totalTrackedSeconds) || 0))
       activeProjectSeconds = Math.max(0, Math.floor(Number(next.activeProjectSeconds) || 0))
       runningTimers = Math.max(0, Math.floor(Number(next.runningTimers) || 0))
@@ -167,7 +177,7 @@ Item {
       reportStatus = String(next.reportStatus || "No PDF reports queued")
       syncStatus = String(next.syncStatus || "Not synced yet")
       syncError = String(next.syncError || "")
-      backendError = ""
+      if (!loaded) backendError = ""
       loaded = true
       handleStartup()
     } catch (error) {
@@ -204,8 +214,18 @@ Item {
     enqueue("project-update", args, {})
   }
 
-  function addTask() {
-    enqueue("task-add", ["task", "add", "Empty"], {})
+  function addTask(title) {
+    enqueue("task-add", ["task", "add", String(title || "Empty")], {})
+  }
+
+  function updatePreferences(hourlyClick, volume, reducedMotion) {
+    enqueue("preferences", ["feedback", "configure", "--hourly-click", String(hourlyClick),
+      "--volume", String(Math.round(volume)), "--reduced-motion", String(reducedMotion)], {})
+  }
+
+  function previewClick(volume) {
+    if (sound.item) sound.item.play(volume)
+    else feedbackError = "Audio is unavailable. Check Qt Multimedia and your audio output."
   }
 
   function startTimer(id) {
@@ -278,6 +298,52 @@ Item {
     onCompleted: function(action, context, exitCode, stdout, stderr) {
       root.handleProcess(action, context, exitCode, stdout, stderr)
     }
+  }
+
+  // Independent of the popup and report lane. The backend atomically claims a
+  // milestone, so duplicate widgets cannot play the same hour twice.
+  BackendQueue {
+    id: feedbackQueue
+    commandPrefix: root.backendCommand
+    timeoutMs: 5000
+    onCompleted: function(action, context, exitCode, stdout, stderr) {
+      if (exitCode !== 0) { root.feedbackError = root.outputSummary(stdout, stderr); return }
+      try {
+        var claim = JSON.parse(stdout)
+        root.feedbackError = ""
+        if (claim.play) {
+          root.previewClick(claim.volume)
+          root.hourReached(claim.hours)
+        }
+      } catch (error) { root.feedbackError = "Could not read hourly feedback: " + error }
+    }
+  }
+
+  Loader {
+    id: sound
+    active: root.feedbackEnabled
+    source: "HourlySound.qml"
+    onStatusChanged: if (status === Loader.Error) root.feedbackError = "Qt Multimedia audio could not be loaded"
+  }
+  Connections {
+    target: sound.item
+    function onFailed(message) { root.feedbackError = message }
+  }
+
+  Timer {
+    interval: 10000
+    repeat: true
+    running: root.loaded && root.feedbackEnabled
+    triggeredOnStart: true
+    onTriggered: if (!feedbackQueue.busy) feedbackQueue.enqueue("feedback", ["feedback", "poll"], {})
+  }
+
+  // Pick up CLI changes and timers started on another output, even when idle.
+  Timer {
+    interval: 5000
+    repeat: true
+    running: root.loaded
+    onTriggered: if (!foregroundQueue.busy) root.refresh()
   }
 
   Timer {
