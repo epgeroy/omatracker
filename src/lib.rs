@@ -12,6 +12,7 @@ use tempfile::NamedTempFile;
 use uuid::Uuid;
 
 pub mod agent;
+pub mod artifacts;
 pub mod billing;
 pub mod clear_data;
 mod entities;

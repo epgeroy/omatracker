@@ -351,8 +351,7 @@ fn main() -> Result<()> {
                 ),
                 TemplateCommand::Path { id } => println!("{}", templates::path(&id)?.display()),
                 TemplateCommand::Validate { id } => {
-                    templates::validate(&id)?;
-                    println!("Template is valid");
+                    println!("{}", templates::validate(&id)?);
                 }
                 TemplateCommand::Preview { id, project } => println!(
                     "{}",

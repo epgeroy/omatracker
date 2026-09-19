@@ -341,3 +341,116 @@ fn appearance_validation_is_atomic_and_logo_can_be_cleared() {
     sandbox.run(&["project", "update", DEFAULT_PROJECT_ID, "--logo-path", ""]);
     assert_eq!(sandbox.state()["projects"][0]["logoPath"], json!(""));
 }
+
+#[test]
+fn validation_separates_compilation_text_checks_and_visual_review() {
+    let sandbox = Sandbox::new();
+    let validate = || -> Value {
+        serde_json::from_str(&sandbox.run(&[
+            "agent",
+            "template.validate",
+            "--input",
+            r#"{"id":"invoice"}"#,
+        ]))
+        .unwrap()
+    };
+    let response = validate();
+    assert_eq!(response["data"]["valid"], true);
+    assert_eq!(response["data"]["checks"]["compile"]["status"], "passed");
+    assert_eq!(response["data"]["checks"]["text"]["status"], "skipped");
+    assert_eq!(
+        response["data"]["checks"]["visual"]["status"],
+        "not_performed"
+    );
+    sandbox.executable(
+        "pdftotext",
+        "#!/bin/sh\necho extraction-failed >&2\nexit 1\n",
+    );
+    let response = validate();
+    assert_eq!(response["data"]["valid"], true);
+    assert_eq!(response["data"]["checks"]["text"]["status"], "failed");
+    assert!(!response["data"]["warnings"].as_array().unwrap().is_empty());
+    assert!(!sandbox.path("state.json").exists());
+}
+
+#[test]
+fn real_compiler_accepts_literal_footer_but_extracted_text_warns() {
+    let sandbox = Sandbox::new();
+    if !sandbox.real_typst() {
+        return;
+    }
+    let Some(extractor) = std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|path| path.join("pdftotext"))
+            .find(|path| path.is_file())
+    }) else {
+        eprintln!("pdftotext unavailable; literal-footer text regression skipped");
+        return;
+    };
+    symlink(extractor, sandbox.path("bin/pdftotext")).unwrap();
+    let folder = sandbox.custom();
+    fs::write(
+        folder.join("template.typ"),
+        include_str!("literal-footer.typ"),
+    )
+    .unwrap();
+    let validate = || -> Value {
+        serde_json::from_str(&sandbox.run(&[
+            "agent",
+            "template.validate",
+            "--input",
+            r#"{"id":"user:client-report"}"#,
+        ]))
+        .unwrap()
+    };
+    let broken = validate();
+    assert_eq!(broken["data"]["valid"], true);
+    assert_eq!(broken["data"]["checks"]["text"]["status"], "warnings");
+    let warnings = broken["data"]["warnings"].as_array().unwrap();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("text("))
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("data.invoice."))
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("content not found"))
+    );
+    fs::write(
+        folder.join("template.typ"),
+        r#"#let render(data) = {
+      set page(footer: [
+        #text(size: 9pt)[#data.issuer.name]
+        #h(1fr)
+        #text(size: 9pt)[#data.invoice.totalText]
+      ])
+      [#data.client.name — #data.invoice.totalText]
+    }"#,
+    )
+    .unwrap();
+    let fixed = validate();
+    assert_eq!(fixed["data"]["checks"]["text"]["status"], "passed");
+    assert_eq!(fixed["data"]["warnings"], json!([]));
+    assert_eq!(fixed["data"]["checks"]["visual"]["status"], "not_performed");
+    // Missing expected fixture content is a warning, never a compilation failure.
+    fs::write(
+        folder.join("template.typ"),
+        "#let render(data) = [Blank custom layout]",
+    )
+    .unwrap();
+    let missing = validate();
+    assert_eq!(missing["data"]["valid"], true);
+    assert!(
+        missing["data"]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("USD 120.00"))
+    );
+}

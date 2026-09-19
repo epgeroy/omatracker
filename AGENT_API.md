@@ -482,12 +482,41 @@ files or reverse a bank payment. The original issued PDF remains archived.
 | `template.path` | `id` |
 | `template.asset` | `id` user template, `source` image path; returns relative reference |
 | `template.validate` | `id` |
+| `artifact.open` | `path`: explicit existing local PDF path (not a URI); no retry key |
 | `drive.configure` | `remote` (`driveFolder`, `syncOnStartup`) |
 | `drive.check` | `{}`; read-only remote access test |
 | `drive.test` | `{}`; explicitly uploads a small uniquely named test file |
 
 Edit the user-owned `.typ` path, validate, select it with `project.configure`, then
 preview a draft. `TEMPLATES.md` documents the invoice template data contract.
+
+`template.validate` preserves `data.valid: true` for successful compilation of
+representative invoice/report fixtures. It additionally returns `checks.compile`
+(`status: passed`, fixture input description), `checks.text` (`passed`, `warnings`,
+`skipped` if optional `pdftotext` cannot start, or `failed` on extraction failure),
+`checks.visual` (`status: not_performed`), and a `warnings` array. Text checks are
+heuristic: missing expected fixture content or leaked Typst expressions is a
+warning, not a compilation error or proof of bad layout. Compilation errors still
+return the normal error envelope. Inspect the rendered actual draft after edits.
+
+`artifact.open` canonicalizes a local PDF path and dispatches an encoded `file://`
+URL through `xdg-open` (Linux) or `open` (macOS), consistent with the QML opener.
+It rejects URLs, missing/non-PDF files and retry keys; it does not access the ledger.
+The response includes `path`, `status`, `launchRequested`, `visiblyOpened: null`,
+and `message`. With valid input the envelope can be `ok: true` while the launch
+status is `launch_failed`: inspect **data.status**, not just the envelope.
+Missing desktop integration, missing opener, or immediate nonzero exit preserves
+the usable PDF path with a diagnostic (and `exitCode` when available).
+`launch_requested` means the opener exited successfully or is still running after
+a 250 ms observation window. Standard streams and the viewer process group are
+detached; later failures and document visibility cannot be confirmed by the CLI.
+
+For “show/open”, obtain a current PDF and call `artifact.open` in the same turn.
+For “review”, read the PDF. Reuse a known existing preview only when all relevant
+inputs are known unchanged; no persistent preview cache is maintained. Refresh
+draft billing before rendering after source changes: `invoice.preview` is not a
+refresh operation. Template/assets/logo changes invalidate preview reuse even
+without a draft revision change. Issued invoices always render captured originals.
 
 Run `rclone config` for OAuth setup; the user completes browser authentication.
 OmaTracker stores the remote name, not OAuth credentials. `drive.test` leaves its

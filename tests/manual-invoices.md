@@ -184,7 +184,8 @@ creation key must return `REQUEST_TARGET_REMOVED`, not an obsolete successful ID
 ```bash
 tracker agent invoice.create --input '{"project":"PROJECT_ID","from":"2025-08-01","to":"2025-09-01","currency":"USD"}' --key demo-draft
 tracker agent invoice.preview --input '{"id":"INVOICE_ID"}'
-# Open the returned PDF path in your PDF viewer.
+tracker agent artifact.open --input '{"path":"PDF_PATH"}'
+# Inspect the PDF, including the footer, before issue; launch is not inspection.
 tracker agent invoice.issue --input '{"id":"INVOICE_ID","revision":1,"date":"2025-09-01"}' --key demo-issue
 tracker agent invoice.render --input '{"id":"INVOICE_ID"}'
 tracker agent invoice.get --input '{"id":"INVOICE_ID"}'
@@ -202,6 +203,28 @@ Create a second overlapping draft: issued time must be excluded. Try correcting
 issued time: expect `ENTRY_INVOICED`. Test `invoice.void`, correction, and
 `invoice.reissue`; the replacement references the original and receives a new
 number when issued. `invoice.paid` changes payment state without uploading anything.
+
+## Preview-opening and validation regression
+
+1. Ask to show the draft: obtain a current preview and use `artifact.open` in the
+   same turn. In a working desktop, confirm it appears in the viewer. The command
+   must return promptly; `launch_requested` alone is not visual confirmation.
+2. Ask again with unchanged inputs: check the known path exists and reopen it
+   without another render. Delete that temporary PDF and verify it is regenerated.
+3. Change draft source billing, refresh with the current revision, then preview.
+   Verify the new amount. Edit template/imported assets or logo and regenerate;
+   inspect the final PDF. Historical entry rates are not changed by setting a
+   new current project rate. Repeat the issued-original check above.
+4. In a disposable template, copy `tests/literal-footer.typ` to `template.typ`.
+   `template.validate` must compile successfully and report text warnings when
+   `pdftotext` is installed. Without it the text check must be `skipped`. Inspect
+   the preview: the footer visibly leaks Typst expressions. Apply the correct
+   footer in `TEMPLATES.md`, render, and inspect it again before issue.
+5. Use a PDF path with spaces and non-ASCII characters for a real desktop smoke
+   check. Automated `tests/artifacts.rs` uses fake openers for long-lived viewers,
+   headless sessions, missing associations and missing files; no GUI is launched.
+6. For branding, distinguish verified website matching from local-logo reuse.
+   Record optional metadata only for facts established and review actually done.
 
 ## 4. Scheduling and panel
 

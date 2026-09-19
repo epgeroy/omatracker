@@ -66,6 +66,62 @@ sample data; use preview to check actual project metadata and logos. Typst error
 include source locations. Tracking and template management work without Typst;
 validation, preview, and PDF rendering require it.
 
+## Compilation, text checks, and visual review
+
+`template validate` returns JSON evidence, also available as `data` from
+`agent template.validate`. `valid` remains the compile-success flag. The checks
+separate `compile` (representative fixture input), `text` (optional `pdftotext`
+heuristics), and `visual` (always `not_performed`). An absent extractor is reported
+as `skipped`; a failed extraction is reported separately without invalidating a
+successful compile. Install your distribution's Poppler tools for text checks.
+Missing fixture text or possible literal Typst markup produces warnings. These
+checks cannot detect clipping, poor contrast, incorrect logos or all layout errors.
+
+After editing a template, render and **inspect the actual PDF** before declaring
+it reviewed or issuing it. Inspect new content on unchanged layouts when long
+names, additional rows, logos or pagination could change the result. Generation
+alone establishes renderability, not visual correctness. In a content block,
+these `#` prefixes are essential:
+
+```typst
+#let render(data) = {
+  set page(footer: [
+    #text(size: 9pt)[#data.issuer.name]
+    #h(1fr)
+    #text(size: 9pt)[#data.invoice.totalText]
+  ])
+  [#data.client.name — #data.invoice.totalText]
+}
+```
+
+Removing the prefixes can leave valid syntax that prints `text(...)`, `h(...)`,
+or `data.invoice.totalText` literally. `tests/literal-footer.typ` is a deliberate
+regression fixture for this failure. Compilation passes; extracted text warns;
+only rendered inspection establishes what the footer actually looks like.
+
+To show an existing PDF promptly:
+
+```sh
+bin/omatracker agent artifact.open --input '{"path":"/absolute/path/preview.pdf"}'
+```
+
+This requests a desktop launch and returns the path even on dispatch failure.
+It never proves visibility or performs visual inspection. Reuse the path within
+a session only if the file exists and inputs are known unchanged. Refresh changed
+draft billing first; regenerate after template/asset/logo changes. Render issued
+invoices from their captured bundles. See the skill's preview intent table.
+
+## Optional branding notes
+
+An optional `metadata.json` beside `template.typ` can record `client`, `sourceUrl`,
+`logoOrigin`, `palette`, and `reviewDate`. These are workflow-maintained notes, not
+required fields or proof of freshness; the template engine does not interpret them.
+Record only verified provenance, omit unknown fields, and date a review only after
+inspecting the rendered artifact. Existing templates need no metadata migration.
+Prefer a suitable existing template; verify the supplied website when website
+matching is requested, or explicitly say an existing local asset was reused
+without website verification. Local filenames alone do not establish provenance.
+
 ## Template contract
 
 ### Invoice contract (version 1)

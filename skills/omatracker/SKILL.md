@@ -71,6 +71,34 @@ Respect a user-specified ledger using `--data-path`. No MCP server is required.
   projects separately from the empty system workspace. Report the backup path and
   any partial failures. Do not automatically retry a clear after a lost response.
 
+## Preview intent and evidence
+
+| User intent | Action |
+| --- | --- |
+| Generate/export preview | Return PDF path and billing summary. |
+| Show/open preview | Obtain a current PDF, then `artifact.open` with `path` in the same turn. |
+| Review/check layout | Read the rendered PDF and report visual findings. |
+| Show unchanged preview | Reuse a known existing PDF only when relevant inputs are known unchanged. |
+| Show draft after billing changes | `invoice.refresh`, then `invoice.preview`, then open. |
+| Show issued invoice | `invoice.render`, then open the captured original. |
+
+`invoice.preview` renders the saved draft; it does **not** refresh billing.
+An invoice ID alone does not prove freshness: consider entries/rates, draft data,
+template source/imported assets, logo, and render settings. Regenerate when unsure
+or when a temporary PDF was deleted. Keep reuse session-local.
+
+After any template edit, render and inspect the actual PDF before calling the
+layout reviewed. For unchanged templates, inspect new previews when content or
+layout differences warrant it (long names, new logo, page breaks, more rows).
+`template.validate` is a representative-fixture compile check with optional,
+heuristic PDF text checks; neither it nor a viewer launch is visual inspection.
+Always inspect the final changed preview before issuing. See the preview and
+branding recipes in `references/workflows.md`.
+
+`artifact.open` reports `launch_requested` or `launch_failed`, retains the PDF
+path, and never proves visibility. On failure, explain the diagnostic and provide
+the path; do not claim the PDF opened. Do not use retry keys for viewer launches.
+
 ## Accounting rules
 
 A rate makes work billable, including zero. No rate makes it non-billable. Recorded

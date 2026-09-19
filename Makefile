@@ -61,6 +61,7 @@ qml-check: backend
 	  test -f "$$temporary/rates-passed"
 
 template-check:
+	typst compile --root . tests/validate-literal-footer.typ target/template-literal-footer.pdf
 	typst compile --root . tests/validate-invoice.typ target/template-invoice.pdf
 	typst compile --root . tests/validate-detailed.typ target/template-detailed.pdf
 	typst compile --root . tests/validate-summary.typ target/template-summary.pdf

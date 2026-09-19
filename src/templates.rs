@@ -267,7 +267,7 @@ pub(crate) fn compile(bundle: &Path, pdf: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn validate(id: &str) -> Result<()> {
+pub fn validate(id: &str) -> Result<Value> {
     let temporary = tempfile::tempdir()?;
     let bundle = temporary.path().join("bundle");
     let mut data: Value = serde_json::from_str(include_str!("../tests/report-snapshot.json"))?;
@@ -276,7 +276,64 @@ pub fn validate(id: &str) -> Result<()> {
         data[key] = value.clone();
     }
     capture(id, &data, &bundle)?;
-    compile(&bundle, &temporary.path().join("preview.pdf"))
+    let pdf = temporary.path().join("preview.pdf");
+    compile(&bundle, &pdf)?;
+    let (text, warnings) = check_text(&pdf);
+    Ok(json!({"valid":true,"checks":{
+        "compile":{"status":"passed","input":"representative_invoice_and_report_fixtures"},
+        "text":text,"visual":{"status":"not_performed"}
+    },"warnings":warnings}))
+}
+
+fn check_text(pdf: &Path) -> (Value, Vec<String>) {
+    let output = match Command::new("pdftotext")
+        .arg("-layout")
+        .arg(pdf)
+        .arg("-")
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            return (
+                json!({"status":"skipped","tool":"pdftotext","reason":error.to_string()}),
+                vec![],
+            );
+        }
+    };
+    if !output.status.success() {
+        return (
+            json!({"status":"failed","tool":"pdftotext","reason":String::from_utf8_lossy(&output.stderr)}),
+            vec!["PDF text extraction failed; compilation passed but text was not checked.".into()],
+        );
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Deliberately heuristic: custom layouts can omit these fields or quote code.
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut warnings = Vec::new();
+    for expected in ["USD 120.00", "Client"] {
+        if !compact.contains(&expected.replace(' ', "")) {
+            warnings.push(format!(
+                "Representative content not found in extracted text: {expected}"
+            ));
+        }
+    }
+    for marker in [
+        "text(",
+        "h(",
+        "data.invoice.",
+        "data.issuer.",
+        "data.client.",
+    ] {
+        if compact.contains(marker) {
+            warnings.push(format!(
+                "Possible literal Typst markup in PDF text: {marker}"
+            ));
+        }
+    }
+    (
+        json!({"status":if warnings.is_empty() {"passed"} else {"warnings"},"tool":"pdftotext","heuristic":true}),
+        warnings,
+    )
 }
 
 pub fn preview(ledger: &Path, id: &str, project_id: Option<&str>) -> Result<PathBuf> {

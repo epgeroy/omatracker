@@ -63,6 +63,7 @@ pub const ACTIONS: &[&str] = &[
     "template.create",
     "template.asset",
     "template.validate",
+    "artifact.open",
     "template.path",
     "doctor",
     "drive.configure",
@@ -90,6 +91,7 @@ pub struct Cli {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Input {
+    pub path: Option<String>,
     pub id: Option<String>,
     pub project: Option<String>,
     pub name: Option<String>,
@@ -955,6 +957,7 @@ fn validate_image(path: &Path) -> Result<()> {
 
 fn external(action: &str, path: &Path, i: &Input) -> Result<Value> {
     Ok(match action {
+        "artifact.open" => crate::artifacts::open(&required(&i.path, "path")?)?,
         "invoice.preview" => b::render(path, &required(&i.id, "id")?, true)?,
         "invoice.render" => b::render(path, &required(&i.id, "id")?, false)?,
         "invoice.upload" => b::upload(path, &required(&i.id, "id")?)?,
@@ -964,10 +967,7 @@ fn external(action: &str, path: &Path, i: &Input) -> Result<Value> {
             &required(&i.name, "name")?,
             i.copy_from.as_deref().unwrap_or("invoice")
         )?),
-        "template.validate" => {
-            crate::templates::validate(&required(&i.id, "id")?)?;
-            json!({"valid":true})
-        }
+        "template.validate" => crate::templates::validate(&required(&i.id, "id")?)?,
         "template.asset" => {
             let id = required(&i.id, "id")?;
             if !id.starts_with("user:") {
@@ -1119,6 +1119,7 @@ pub fn execute(path: &Path, action: &str, input: Value, key: Option<&str>) -> Re
     }
     if action.starts_with("template.")
         || [
+            "artifact.open",
             "doctor",
             "drive.check",
             "drive.test",

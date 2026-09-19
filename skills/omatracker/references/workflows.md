@@ -10,9 +10,11 @@ All commands below are `bin/omatracker agent ACTION --input JSON`.
 2. `client.list`; reuse a matching client or `client.set` with complete `details`.
 3. `project.create` with `name`, `client`, `rate`, `currency`, `effectiveAt`,
    `timezone`, `dueDays`, and optional `logo`. Do not invent historical effective dates.
-4. `template.create` from `invoice`; get its path with `template.path`.
+4. `template.list`; inspect one suitable existing template first. If needed,
+   `template.create` from `invoice`; get its path with `template.path`.
 5. `template.asset` imports images and returns the reference for Typst `image()`.
 6. Edit the template, `template.validate`, then `project.configure` with `template`.
+   Render a real draft and read the PDF after edits; compilation is not layout review.
 7. Optionally `repository.bind` so future sessions can discover the project.
 
 ## Rename or delete tasks, projects, and clients
@@ -155,6 +157,74 @@ If the source changes, get the draft's current revision, `invoice.refresh` with
 that revision, then preview again. For an issued invoice
 correction: `invoice.void` with reason, correct entries, `invoice.reissue`, preview,
 issue. This preserves a link to the original and never reuses its number.
+
+## Showing and reviewing previews
+
+| Request | Workflow |
+| --- | --- |
+| Generate/export | Render; return path, amount/currency, period and exclusions. |
+| Show/open | Get current PDF and call `artifact.open` with `path` in the same turn. |
+| Review/check layout | Inspect the rendered PDF and report findings. |
+| Show the same unchanged preview | Reuse its existing path when inputs are known unchanged. |
+| Show draft after source billing changes | Refresh draft, render, then open. |
+| Show issued invoice | Render/open its immutable captured original. |
+
+Example: `artifact.open --input '{"path":"/absolute/path/preview.pdf"}'` (with the
+usual `bin/omatracker agent` prefix). Check `data.status`: `launch_requested` only
+means dispatch succeeded or is still running, not that a window is visible.
+`launch_failed` includes a diagnostic and the usable path. Avoid blocking shell
+opener calls; a background `&` alone can leave inherited tool output pipes open.
+
+`invoice.preview` renders the saved draft; it is not a billing refresh. After
+entries, historical rates, client/project billing settings or allocations change,
+use `invoice.refresh` with the current draft revision before previewing. A current
+project rate does not rewrite historical entry rates. Template source/imported
+asset edits require a new preview even if the draft revision is unchanged; logo
+or project appearance changes also require refreshing captured draft settings.
+Never refresh an issued invoice: `invoice.render` uses its captured original.
+
+Reuse is session-level: remember the path and the relevant unchanged inputs, and
+check the file still exists. Invoice ID or draft revision alone is insufficient.
+When freshness is uncertain or the file was removed, regenerate. Do not repeat an
+unchanged zero-total render just to reopen it; report the zero/exclusions instead.
+
+After a template change, **read the rendered PDF**. Check footer literal text,
+client/issuer, logo, service and due dates, amounts, long lines, pagination and
+clipping. For unchanged templates, inspect new previews when content differences
+can affect layout. Inspect the final changed preview before issue. If inspection
+is unavailable, say it has only compiled/rendered and leave visual review pending.
+
+`template.validate` compiles representative invoice/report fixtures, not the
+current draft. `valid: true` means compilation passed. `checks.text` reports
+optional `pdftotext` heuristics; missing extractor means `skipped`, not passed.
+Warnings can find leaked `text(...)`/`h(...)` or missing expected fixture text but
+cannot prove layout quality. `checks.visual.status` remains `not_performed`.
+Typst content blocks need `#` before function calls **and** expressions:
+
+```typst
+#let render(data) = {
+  set page(footer: [
+    #text(size: 9pt)[#data.issuer.name]
+    #h(1fr)
+    #text(size: 9pt)[#data.invoice.totalText]
+  ])
+  [#data.client.name — #data.invoice.totalText]
+}
+```
+
+Without those prefixes, markup can compile as literal visible text.
+
+## Reusable branding and provenance
+
+Prefer one suitable template before reading all alternatives. If asked to match a
+website, visit and verify the supplied URL. If it cannot be checked, say so; local
+logo reuse is not verified website matching. Never infer a logo's origin from its
+filename. Record only established facts in an optional `metadata.json` beside
+`template.typ`: `client`, `sourceUrl`, `logoOrigin`, `palette`, `reviewDate`.
+Omit unknown fields; set reviewDate only after actual rendered inspection, using
+the date of that review. Describe logoOrigin as the verified URL or the actual
+local asset path and note if the website was unverified. This sidecar is workflow
+documentation, not a freshness key; existing metadata-free templates still work.
 
 ## Dependencies and migration
 
