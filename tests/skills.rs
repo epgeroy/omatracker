@@ -21,7 +21,14 @@ fn installed_retry_guidance_matches_the_embedded_batch_key_contract() {
         let installed = fs::read_to_string(root.join(file)).unwrap();
         if file == "SKILL.md" {
             // Installation prepends executable-path guidance to the skill body.
-            assert!(installed.ends_with(source.split_once("# OmaTracker\n").unwrap().1));
+            let source_body = source
+                .split_once("# OmaTracker\n")
+                .unwrap()
+                .1
+                .replace("](../../", "](");
+            assert!(installed.ends_with(&source_body));
+        } else if file == "references/workflows.md" {
+            assert_eq!(installed, source.replace("](../../../", "](../"));
         } else {
             assert_eq!(installed, source);
         }
