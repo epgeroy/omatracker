@@ -16,17 +16,21 @@ check:
 ui-check:
 	python tests/ui-check.py
 
-qml-check:
+qml-check: backend
 	@temporary=$$(mktemp -d); \
 	trap 'rm -rf "$$temporary"' EXIT; \
-	OMATRACKER_TEST_DIR="$$temporary" QT_QPA_PLATFORM=offscreen \
+	  OMATRACKER_TEST_DIR="$$temporary" QT_QPA_PLATFORM=offscreen \
 	  timeout 15 quickshell --no-color --path ServiceTest.qml && \
-	  test -f "$$temporary/passed"
+	  test -f "$$temporary/passed" && \
+	  OMATRACKER_TEST_DIR="$$temporary" QT_QPA_PLATFORM=offscreen \
+	  timeout 15 quickshell --no-color --path TemplateServiceTest.qml && \
+	  test -f "$$temporary/templates-passed" && \
+	  HOME="$$temporary" XDG_CONFIG_HOME="$$temporary/config" \
+	  OMATRACKER_TEST_DIR="$$temporary" QT_QPA_PLATFORM=offscreen \
+	  timeout 15 quickshell --no-color --path RateTest.qml && \
+	  test -f "$$temporary/rates-passed"
 
 template-check:
-	@if command -v typst >/dev/null; then \
-		typst compile --root . tests/validate-detailed.typ target/template-detailed.pdf; \
-		typst compile --root . tests/validate-summary.typ target/template-summary.pdf; \
-	else \
-		printf '%s\n' "Typst unavailable; skipping template compilation"; \
-	fi
+	typst compile --root . tests/validate-detailed.typ target/template-detailed.pdf
+	typst compile --root . tests/validate-summary.typ target/template-summary.pdf
+	typst compile --root . tests/validate-rates.typ target/template-rates.pdf

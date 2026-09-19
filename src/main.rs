@@ -60,6 +60,11 @@ enum Commands {
         #[command(subcommand)]
         command: ServiceCommand,
     },
+    /// Create, inspect, and preview user-owned PDF templates.
+    Template {
+        #[command(subcommand)]
+        command: TemplateCommand,
+    },
     /// Upload the current ledger snapshot with rclone.
     Sync,
 }
@@ -73,7 +78,7 @@ enum ProjectCommand {
     Select {
         id: String,
     },
-    Update(ProjectUpdate),
+    Update(Box<ProjectUpdate>),
 }
 
 #[derive(Subcommand)]
@@ -101,9 +106,25 @@ struct ProjectUpdate {
     #[arg(long)]
     template_id: Option<String>,
     #[arg(long)]
+    accent_color: Option<String>,
+    #[arg(long, value_parser = ["a4", "letter"])]
+    paper: Option<String>,
+    /// Image file; pass an empty string to remove the logo.
+    #[arg(long)]
+    logo_path: Option<String>,
+    #[arg(long)]
     export_weekly: Option<bool>,
     #[arg(long)]
     export_monthly: Option<bool>,
+    /// Decimal hourly rate; uses the existing currency when omitted.
+    #[arg(long, conflicts_with = "clear_rate")]
+    hourly_rate: Option<String>,
+    /// Supported currency code (for example USD, EUR, JPY, KWD).
+    #[arg(long, requires = "hourly_rate", conflicts_with = "clear_rate")]
+    currency: Option<String>,
+    /// Remove the project's hourly rate.
+    #[arg(long)]
+    clear_rate: bool,
 }
 
 #[derive(Subcommand)]
@@ -172,6 +193,30 @@ enum ServiceCommand {
     Remove,
 }
 
+#[derive(Subcommand)]
+enum TemplateCommand {
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    Create {
+        name: String,
+        #[arg(long, default_value = "detailed")]
+        from: String,
+    },
+    Path {
+        id: String,
+    },
+    Validate {
+        id: String,
+    },
+    Preview {
+        id: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let data_path = cli.data_path.unwrap_or(default_data_path()?);
@@ -214,8 +259,14 @@ fn main() -> Result<()> {
                     client_name: update.client_name,
                     company_name: update.company_name,
                     template_id: update.template_id,
+                    accent_color: update.accent_color,
+                    paper: update.paper,
+                    logo_path: update.logo_path,
                     export_weekly: update.export_weekly,
                     export_monthly: update.export_monthly,
+                    hourly_rate: update.hourly_rate,
+                    currency: update.currency,
+                    clear_rate: update.clear_rate,
                 },
             )?,
         },
@@ -249,6 +300,34 @@ fn main() -> Result<()> {
             ServiceCommand::Install => install_report_timer(&data_path)?,
             ServiceCommand::Remove => remove_report_timer()?,
         },
+        Commands::Template { command } => {
+            use omatracker::templates;
+            match command {
+                TemplateCommand::List { json } => {
+                    let items = templates::list()?;
+                    if json {
+                        println!("{}", serde_json::to_string(&items)?);
+                    } else {
+                        for item in items {
+                            println!("{}\t{}\t{}", item.id, item.name, item.path);
+                        }
+                    }
+                }
+                TemplateCommand::Create { name, from } => println!(
+                    "{}",
+                    serde_json::to_string(&templates::create(&name, &from)?)?
+                ),
+                TemplateCommand::Path { id } => println!("{}", templates::path(&id)?.display()),
+                TemplateCommand::Validate { id } => {
+                    templates::validate(&id)?;
+                    println!("Template is valid");
+                }
+                TemplateCommand::Preview { id, project } => println!(
+                    "{}",
+                    templates::preview(&data_path, &id, project.as_deref())?.display()
+                ),
+            }
+        }
         Commands::Sync => sync_state(&data_path)?,
     }
     Ok(())

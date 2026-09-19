@@ -15,7 +15,7 @@ FloatingWindow {
     property var activeTasks: [
       { id: "one", title: "Production ready", running: true, displaySeconds: 608 },
       { id: "two", title: "Documentation", running: false, displaySeconds: 120 }]
-    property var activeProject: ({ id: "p", name: "Test project", clientName: "Test client", companyName: "", exportWeekly: true, exportMonthly: false, templateId: "detailed" })
+    property var activeProject: ({ id: "p", name: "Test project", clientName: "Test client", companyName: "", exportWeekly: true, exportMonthly: false, templateId: "detailed", accentColor: "#476a89", paper: "a4", logoPath: "" })
     property var state: ({ projects: [activeProject], drive: { remote: "test", folder: "Tracker", syncOnStartup: false } })
     property var runningTasks: [activeTasks[0]]
     property var preferences: ({ hourlyClick: true, volume: 25, reducedMotion: true })
@@ -27,10 +27,16 @@ FloatingWindow {
     property string syncError: ""
     property string backendError: ""
     property string feedbackError: ""
+    property var activeProjectEstimate: null
+    property string activeProjectAmountText: ""
+    property var templates: [{ id: "detailed", name: "Detailed" }, { id: "user:custom", name: "Custom" }]
+    property string templateError: ""
+    property string templateStatus: ""
     property string reportStatus: "No reports queued"
     property string setupStatus: "Ready"
     property bool backgroundChecksEnabled: false
     property string lastAction: ""
+    property var lastChanges: ({})
     signal actionFinished(string action, bool success)
     signal hourReached(int hours)
     function displayTaskSeconds(task) { return task.displaySeconds }
@@ -46,11 +52,15 @@ FloatingWindow {
     function requestExport(period) { lastAction = "export:" + period }
     function retryReports() { lastAction = "retry" }
     function setBackgroundChecks(enabled) { lastAction = "background:" + enabled }
-    function updateProject(id, changes) { lastAction = "project-update" }
+    function updateProject(id, changes) { lastAction = "project-update:" + id; lastChanges = changes }
     function updateDrive(remote, folder, startup) { lastAction = "drive-update" }
     function updatePreferences(click, volume, motion) { lastAction = "preferences" }
     function previewClick(volume) { lastAction = "preview" }
     function createProject(name) { lastAction = "create:" + name }
+    function refreshTemplates() {}
+    function previewTemplate(id, project) { lastAction = "preview-template" }
+    function editTemplate(id) { lastAction = "edit-template" }
+    function createTemplate(name, from, project) { lastAction = "create-template" }
   }
   App.TrackerView { id: view; width: 420; height: 600; tracker: fake }
   TestCase {
@@ -70,6 +80,30 @@ FloatingWindow {
       keyClick(Qt.Key_J); compare(view.selectedId, "two")
       compare(view.heroTask.id, "one")
       keyClick(Qt.Key_Space); compare(fake.lastAction, "start:two")
+    }
+    function test_mouse_then_keyboard_changes_focus_target() {
+      mouseClick(findChild(view, "primaryAction"))
+      compare(fake.lastAction, "stop:one")
+      keyClick(Qt.Key_J); keyClick(Qt.Key_J); keyClick(Qt.Key_Space)
+      compare(fake.lastAction, "start:two")
+    }
+    function test_report_save_preserves_template() {
+      view.navigate("reports"); wait(20)
+      keyClick(Qt.Key_Tab); keyClick(Qt.Key_Tab); keyClick(Qt.Key_Return)
+      compare(fake.lastAction, "project-update:p")
+      verify(fake.lastChanges.templateId === undefined)
+      fake.actionFinished("project-update", true)
+    }
+    function test_rate_fields_keep_draft_and_save() {
+      view.navigate("project"); wait(20)
+      var rate = findChild(view, "hourlyRate")
+      rate.input.forceActiveFocus(); keyClicks("85.25")
+      keyClick(Qt.Key_Tab); keyClicks("usd")
+      compare(rate.text, "85.25")
+      keyClick(Qt.Key_Tab); keyClick(Qt.Key_Return)
+      compare(fake.lastChanges.hourlyRate, "85.25")
+      compare(fake.lastChanges.currency, "USD")
+      fake.actionFinished("project-update", true)
     }
     function test_editor_owns_shortcuts_and_keeps_failed_draft() {
       keyClick(Qt.Key_N); tryCompare(view, "page", "edit")
@@ -96,7 +130,7 @@ FloatingWindow {
       keyClick(Qt.Key_Return); compare(view.page, "home"); compare(fake.lastAction, "")
     }
     function test_all_pages_load() {
-      var pages = ["projects", "project", "reports", "settings", "running", "commands", "new-project", "help"]
+      var pages = ["projects", "project", "reports", "templates", "settings", "running", "commands", "new-project", "help"]
       for (var i = 0; i < pages.length; i++) {
         view.navigate(pages[i]); wait(30); compare(view.page, pages[i]); view.back(); wait(20)
       }

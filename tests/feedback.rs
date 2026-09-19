@@ -69,3 +69,13 @@ fn local_preferences_roundtrip_validation_and_muting_do_not_backlog() {
     assert!(feedback::configure(&path, true, 101, false).is_err());
     assert_eq!(feedback::preferences(&path).unwrap(), preferences);
 }
+
+#[test]
+fn damaged_audio_preferences_do_not_disable_tracking() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ledger.json");
+    write_work(&path, 42);
+    fs::write(dir.path().join("ledger.json.feedback.json"), "invalid json").unwrap();
+    assert!(presentation_status(&path).is_ok());
+    assert!(feedback::poll(&path).is_err());
+}

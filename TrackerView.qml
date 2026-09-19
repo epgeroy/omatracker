@@ -4,7 +4,7 @@ import qs.Commons
 import qs.Ui as Ui
 import "TaskModel.js" as TaskModel
 
-FocusScope {
+Item {
   id: root
   required property var tracker
   property bool panelOpen: true
@@ -47,6 +47,7 @@ FocusScope {
     { id: "new-project", title: "Create project", hint: "" },
     { id: "project", title: "Project settings", hint: "" },
     { id: "reports", title: "Reports and exports", hint: "" },
+    { id: "templates", title: "PDF templates and appearance", hint: "" },
     { id: "settings", title: "Preferences and Google Drive", hint: "," },
     { id: "running", title: "Running timers · all projects", hint: "" },
     { id: "sync", title: "Sync to Google Drive", hint: "" },
@@ -60,7 +61,7 @@ FocusScope {
     return source.filter(function(item) { return String(item.name || item.title).toLowerCase().indexOf(needle) >= 0 })
   }
   readonly property string pageTitle: ({ projects: "Projects", project: "Project settings",
-    reports: "Reports", settings: "Preferences & Drive", search: "Find a task", commands: "Commands",
+    reports: "Reports", templates: "PDF templates & appearance", settings: "Preferences & Drive", search: "Find a task", commands: "Commands",
     running: "Running · all projects", edit: draftTask ? "Edit task" : "New task",
     "new-project": "New project", confirm: "Confirm action", help: "Keyboard shortcuts" })[page] || "OmaTracker"
   implicitHeight: Math.min(Style.space(570), content.implicitHeight)
@@ -71,6 +72,7 @@ FocusScope {
     if (page === "home") savedScroll = scroll.contentY
     history = history.concat([page]); page = next; query = ""; choiceIndex = 0
     actionsVisible = false
+    if (next === "templates") tracker.refreshTemplates()
     Qt.callLater(function() { scroll.contentY = 0; if (body.item && body.item.focusInitial) body.item.focusInitial(); else root.forceActiveFocus() })
     if (!reducedMotion) entrance.restart()
   }
@@ -206,7 +208,7 @@ FocusScope {
         width: parent.width
         sourceComponent: root.page === "home" ? homePage : root.picker ? pickerPage
           : root.page === "edit" ? editorPage : root.page === "project" ? projectPage
-          : root.page === "reports" ? reportPage : root.page === "settings" ? settingsPage
+          : root.page === "reports" ? reportPage : root.page === "templates" ? templatePage : root.page === "settings" ? settingsPage
           : root.page === "new-project" ? newProjectPage : root.page === "confirm" ? confirmPage : helpPage
       }
       Caption {
@@ -399,7 +401,7 @@ FocusScope {
           width: taskList.width
           height: Style.space(36)
           foreground: root.foreground
-          hasCursor: !root.heroFocused && root.selectedId === modelData.id && !root.actionsVisible
+          hasCursor: !root.heroFocused && root.selectedId === modelData.id && !root.actionsVisible && root.activeFocus
           Accessible.role: Accessible.ListItem
           Accessible.name: modelData.title + (modelData.running ? ", running, " : ", paused, ") + duration.text
           MouseArea {
@@ -468,6 +470,11 @@ FocusScope {
       }
       Caption { visible: root.tasks.length === 0; text: "Start with one small task. Press n to name it." }
       Caption { text: "Project total   " + root.tracker.activeProjectText; color: root.foreground }
+      Caption {
+        visible: !!root.tracker.activeProjectEstimate
+        text: root.tracker.activeProjectEstimate ? root.tracker.activeProjectEstimate.rateText
+          + " · Estimated " + root.tracker.activeProjectAmountText : ""
+      }
       Action {
         width: parent.width; leftAlign: true
         text: root.tracker.syncError ? "Drive needs attention →" : root.tracker.state.drive && root.tracker.state.drive.remote
@@ -545,15 +552,24 @@ FocusScope {
     id: projectPage
     Column {
       spacing: Style.space(12)
-      property string projectId: root.project ? root.project.id : ""
+      property string projectId: ""
+      Component.onCompleted: projectId = root.project ? root.project.id : ""
       function focusInitial() { name.focusInput() }
       Field { id: name; label: "Project name"; Component.onCompleted: text = root.project ? root.project.name : "" }
       Field { id: client; label: "Client (optional)"; Component.onCompleted: text = root.project ? root.project.clientName : "" }
       Field { id: company; label: "Prepared by (optional)"; Component.onCompleted: text = root.project ? root.project.companyName : "" }
+      Field { id: rate; objectName: "hourlyRate"; label: "Hourly rate (optional)"; placeholder: "e.g. 80.00"; Component.onCompleted: text = root.tracker.activeProjectEstimate ? root.tracker.activeProjectEstimate.hourlyRate : "" }
+      Field { id: currency; objectName: "currency"; label: "Currency"; placeholder: "USD / EUR"; Component.onCompleted: text = root.project && root.project.rate ? root.project.rate.currency : "" }
+      Caption { text: "Leave the rate empty to remove it. New reports use the current rate; queued reports retain their amounts." }
       Action {
         text: "Save project"; bordered: true
         enabled: name.text.trim() !== "" && root.pendingAction === ""
-        onClicked: { root.pendingAction = "project-update"; root.tracker.updateProject(projectId, { name: name.text, clientName: client.text, companyName: company.text }) }
+        onClicked: {
+          var changes = { name: name.text, clientName: client.text, companyName: company.text }
+          if (rate.text.trim() === "") changes.clearRate = true
+          else { changes.hourlyRate = rate.text.trim(); changes.currency = currency.text.trim().toUpperCase() }
+          root.pendingAction = "project-update"; root.tracker.updateProject(projectId, changes)
+        }
       }
     }
   }
@@ -561,18 +577,19 @@ FocusScope {
     id: reportPage
     Column {
       spacing: Style.space(10)
-      property string projectId: root.project ? root.project.id : ""
+      property string projectId: ""
+      Component.onCompleted: projectId = root.project ? root.project.id : ""
       function focusInitial() { weekly.forceActiveFocus() }
       Caption { text: "Automatic reports · " + (root.project ? root.project.name : "") }
       Toggle { id: weekly; label: "Weekly reports"; Component.onCompleted: checked = !!root.project && root.project.exportWeekly }
       Toggle { id: monthly; label: "Monthly reports"; Component.onCompleted: checked = !!root.project && root.project.exportMonthly }
-      Toggle { id: detailed; label: "Detailed PDF (off = summary)"; Component.onCompleted: checked = !!root.project && root.project.templateId !== "summary" }
       Action {
         text: "Save report settings"; bordered: true
         onClicked: { root.pendingAction = "project-update"; root.tracker.updateProject(projectId, {
-          exportWeekly: weekly.checked, exportMonthly: monthly.checked, templateId: detailed.checked ? "detailed" : "summary" }) }
+          exportWeekly: weekly.checked, exportMonthly: monthly.checked }) }
       }
       Ui.PanelSeparator { foreground: root.foreground }
+      Action { text: "PDF template & appearance →"; onClicked: root.navigate("templates") }
       Action { text: "Export previous completed week"; onClicked: { root.tracker.requestExport("weekly"); root.toast("Weekly export queued") } }
       Action { text: "Export previous completed month"; onClicked: { root.tracker.requestExport("monthly"); root.toast("Monthly export queued") } }
       Action { text: "Retry pending exports"; onClicked: root.tracker.retryReports() }
@@ -581,6 +598,47 @@ FocusScope {
         onClicked: root.tracker.setBackgroundChecks(!root.tracker.backgroundChecksEnabled)
       }
       Caption { text: root.tracker.reportStatus + "\n" + root.tracker.setupStatus }
+    }
+  }
+  Component {
+    id: templatePage
+    Column {
+      spacing: Style.space(10)
+      property string projectId: ""
+      Component.onCompleted: projectId = root.project ? root.project.id : ""
+      function focusInitial() { refreshTemplates.forceActiveFocus() }
+      Caption { text: "Selected: " + (root.project ? root.project.templateId : "") }
+      Repeater {
+        model: root.tracker.templates || []
+        Action {
+          required property var modelData
+          width: parent.width; leftAlign: true
+          text: (root.project && root.project.templateId === modelData.id ? "✓ " : "") + modelData.name
+          onClicked: root.tracker.updateProject(projectId, { templateId: modelData.id })
+        }
+      }
+      Flow {
+        width: parent.width; spacing: Style.space(4)
+        Action { id: refreshTemplates; text: "Refresh"; onClicked: root.tracker.refreshTemplates() }
+        Action { text: "Preview saved settings"; onClicked: root.tracker.previewTemplate(root.project.templateId, projectId) }
+        Action { text: "Edit file"; enabled: !!root.project && root.project.templateId.indexOf("user:") === 0; onClicked: root.tracker.editTemplate(root.project.templateId) }
+      }
+      Field { id: templateName; label: "New editable template name"; placeholder: "e.g. client-report" }
+      Action {
+        text: "Create editable copy and select"
+        enabled: templateName.text.trim() !== ""
+        onClicked: root.tracker.createTemplate(templateName.text.trim(), root.project.templateId, projectId)
+      }
+      Ui.PanelSeparator { foreground: root.foreground }
+      Field { id: accent; label: "PDF accent color"; placeholder: "#476a89"; Component.onCompleted: text = root.project ? root.project.accentColor : "#476a89" }
+      Toggle { id: letter; label: "US Letter paper (off = A4)"; Component.onCompleted: checked = !!root.project && root.project.paper === "letter" }
+      Field { id: logo; label: "Logo image path (optional)"; placeholder: "~/Pictures/logo.png"; Component.onCompleted: text = root.project ? root.project.logoPath : "" }
+      Action {
+        text: "Save appearance"; bordered: true
+        onClicked: { root.pendingAction = "project-update"; root.tracker.updateProject(projectId, {
+          accentColor: accent.text, paper: letter.checked ? "letter" : "a4", logoPath: logo.text }) }
+      }
+      Caption { text: root.tracker.templateError || root.tracker.templateStatus || ""; color: root.tracker.templateError ? Color.urgent : root.secondary }
     }
   }
   Component {

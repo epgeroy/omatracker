@@ -50,6 +50,42 @@ make check
 `make backend` produces `bin/omatracker`, which is the executable that must
 be included when publishing a plugin release.
 
+## Focus-card interface
+
+The main view keeps the active timer, task list, project total and rate estimate
+in view. **Menu** (or `Ctrl+K`) opens searchable commands for project settings,
+reports, PDF templates, running timers across projects, and preferences/Drive.
+
+- `j/k` or arrows navigate; `Space`/`Enter` activate the visible selection.
+- `n` creates a named task; `e` edits; `h/l` or left/right reveal task actions.
+- `p` switches projects, `/` finds tasks, `,` opens preferences, `?` shows help.
+- `Esc` backs out one level. In forms, Tab/Shift+Tab traverse controls; in the
+  main browse view they retain Omarchy's next/previous-panel behavior.
+- Reset/delete actions require an explicit confirmation. Recorded time remains
+  available for reports.
+
+The optional wooden click sounds once per **hour of tracked work across projects**.
+Overlapping timers count once; pauses, manual additions and undated legacy time
+do not count. Counter resets do not reset the hourly cadence. Partial hours
+survive restarts, and gaps longer than 30 seconds in notification polling suppress
+missed sounds. Milestones are checked every 10 seconds while the shell runs,
+including with the popup closed. No sound plays while the shell is stopped.
+
+Preferences include click volume, a Preview button and Reduced motion (for the
+widget's added transitions; Omarchy owns the outer popup fade). Preferences and
+the atomic cross-panel notification checkpoint live in `<dataPath>.feedback.json`,
+separate from the uploaded ledger. Audio uses Qt Multimedia and the bundled
+original `sounds/wood-click.wav`; regenerate it with `python tests/generate-click.py`.
+
+Try the UI using disposable data, including a click in about 20 seconds:
+
+```bash
+make backend
+python tests/ui-check.py --preview --hour-demo
+```
+
+See [manual focus-card testing](tests/manual-focus-card.md) for the full checklist.
+
 ## CLI
 
 The CLI keeps data in `~/.config/omarchy/omatracker.json` by default. Pass
@@ -98,6 +134,51 @@ Reports, uploads, and diagnostics run in a separate command queue so starting
 and stopping timers stays responsive. Ledger uploads use an immutable temporary
 snapshot, allowing tracking to continue during a transfer.
 
+## Project hourly rates
+
+In project settings, enter an **Hourly rate** and **Currency**, then save.
+Leave the rate empty and save to remove it; `0` is a valid rate. The panel shows
+the selected project's rate and estimated amount, including live timer time.
+
+```bash
+bin/omatracker project update <project-id> --hourly-rate 80.00 --currency USD
+bin/omatracker project update <project-id> --hourly-rate 100.00
+bin/omatracker project update <project-id> --clear-rate
+```
+
+The currency is required when first setting a rate. Subsequent rate updates
+can reuse it. To change currencies, supply both the rate and currency; there
+is no exchange-rate conversion. Currency codes are case-insensitive.
+
+- **2 decimal places:** USD, EUR, GBP, CAD, AUD, NZD, CHF, CNY, INR, BRL, MXN,
+  ARS, COP, PEN, ZAR, NGN, EGP, KES, SEK, NOK, DKK, PLN, CZK, HUF, RON, TRY,
+  UAH, RUB, ILS, AED, SAR, QAR, SGD, HKD, TWD, THB, MYR, IDR, PHP, PKR, BDT.
+- **0 decimal places:** JPY, KRW, CLP, VND.
+- **3 decimal places:** BHD, KWD, OMR, TND.
+
+Use a dot for decimals and no thousands separators. Negative rates, unsupported
+currencies, excess decimal places, and rates over 1,000,000,000 minor units
+(USD 10,000,000.00/hour, for example) are rejected without changing the ledger.
+
+Amounts are `rate × seconds / 3600`, rounded half-up once at the total to the
+currency's minor unit. A rate of USD 80/hour and 1h30m gives USD 120.00. Amounts
+are estimates, without taxes or invoicing. Different projects' currencies are
+never summed together.
+
+The panel follows its visible time counters, including undated legacy time.
+Resetting a counter or deleting a task reduces the panel estimate but retains
+dated entries for reports. Weekly/monthly reports use only entries in that
+period, excluding undated legacy time. Both PDF templates show the rate and
+estimated amount when configured; older snapshots remain time-only.
+
+Changing a rate recalculates the panel estimate and affects reports queued
+after the change, including reports for past periods. Already queued reports
+keep their original rate, currency, and amount, including on retry. Re-exporting
+an already queued period does not replace its snapshot. Existing ledgers load
+without rates until configured.
+
+See [manual rate testing](tests/manual-rates.md) for panel, CLI, and PDF checks.
+
 ## Typst and Google Drive
 
 Time tracking has no external runtime dependency. PDF exports and Drive uploads
@@ -107,7 +188,10 @@ are opt-in:
 sudo pacman -S typst rclone
 ```
 
-- **Typst** is invoked as `typst compile` against the bundled local templates.
+- **Typst** is invoked as `typst compile` against captured local templates.
+  Use the bundled layouts or create your own through **Menu → PDF templates and
+  appearance**. See [Custom PDF templates](TEMPLATES.md) for editing, CLI commands,
+  the data contract, and a manual testing walkthrough.
 - **rclone** is invoked only as `rclone copyto --checksum`; OmaTracker never
   runs destructive remote synchronization or deletes remote files.
 - rclone owns Google OAuth tokens. OmaTracker stores neither OAuth credentials
@@ -122,13 +206,17 @@ bin/omatracker drive update --remote omatracker --folder OmaTracker --sync-on-st
 
 Report snapshots, generated Typst sources, and PDFs live in
 `~/.cache/omarchy/omatracker/` until uploaded. Reports are immutable snapshots
-of the project metadata, selected template, and time entries at queue time.
+of the project metadata, selected template source, local assets, logo, and time
+entries at queue time. Template edits affect newly queued reports; retries reuse
+the captured bundle. Existing rendered reports keep their PDFs. Older unrendered
+reports capture the available template on their next render.
 Upload retries reuse a successfully rendered PDF; a missing PDF is rendered
 again. A per-ledger worker lock prevents a retry from resetting an export that
 another process is still handling.
 
-`make check` includes backend regression tests and an isolated QML concurrency
-check using a fake backend. It does not run the panel service against your ledger.
+`make check` includes backend regression tests, an isolated QML concurrency
+check using a fake backend, and rate-service checks against the rebuilt CLI in
+a disposable home. It does not run the panel service against your ledger.
 
 ## Quickshell IPC
 

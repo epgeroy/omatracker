@@ -7,6 +7,11 @@
   )
   set text(size: 10pt)
 
+  if data.project.at("logoPath", default: "") != "" {
+    align(center, image(data.project.logoPath, width: 28mm))
+    v(8pt)
+  }
+
   align(center)[
     #text(size: 10pt, fill: accent, weight: "bold")[TIME REPORT]
     #v(8pt)
@@ -17,6 +22,12 @@
     #text(size: 34pt, weight: "bold", fill: accent)[#data.totalDuration]
     #v(3pt)
     #text(fill: luma(45%))[Total tracked time]
+    #if data.at("estimate", default: none) != none {
+      v(10pt)
+      text(size: 10pt)[Hourly rate: #data.estimate.rateText]
+      linebreak()
+      text(size: 16pt, weight: "bold", fill: accent)[Estimated amount: #data.estimate.amountText]
+    }
   ]
 
   v(24pt)

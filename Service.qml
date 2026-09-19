@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import "RateModel.js" as RateModel
 
 // The Rust CLI owns all durable state, report generation, and Drive uploads.
 // This service only serializes UI requests and keeps a presentation snapshot
@@ -19,6 +20,8 @@ Item {
 
   property var state: emptyState()
   property var activeProject: null
+  property var activeProjectEstimate: null
+  property string projectUpdateError: ""
   property var activeTasks: []
   property var runningTasks: []
   property var preferences: ({ hourlyClick: true, volume: 25, reducedMotion: false })
@@ -42,6 +45,9 @@ Item {
   property string backendError: ""
   property bool startupHandled: false
   property bool diagnosticsReady: false
+  property var templates: []
+  property string templateError: ""
+  property string templateStatus: ""
 
   readonly property bool busy: foregroundQueue.busy || backgroundQueue.busy
   readonly property bool anyRunning: runningTimers > 0
@@ -50,6 +56,8 @@ Item {
   readonly property int displayActiveProjectSeconds: activeProjectSeconds + activeProjectRunningTimers * elapsedSinceStatus
   readonly property string totalText: formatDuration(displayTotalSeconds)
   readonly property string activeProjectText: formatDuration(displayActiveProjectSeconds)
+  readonly property string activeProjectAmountText: RateModel.estimateText(
+    activeProject ? activeProject.rate : null, activeProjectEstimate, displayActiveProjectSeconds)
 
   function emptyState() {
     return {
@@ -108,6 +116,7 @@ Item {
 
   function enqueue(action, args, context) {
     var background = action === "sync" || action === "diagnostics" || action.indexOf("report-") === 0
+      || action === "template-preview" || action === "template-validate"
     var queue = background ? backgroundQueue : foregroundQueue
     queue.enqueue(action, args, context)
   }
@@ -118,7 +127,27 @@ Item {
   }
 
   function handleProcess(action, context, exitCode, stdout, stderr) {
-    if (action === "status") {
+    if (action.indexOf("template-") === 0) {
+      if (exitCode !== 0) {
+        templateError = String(stderr || stdout || "Template command failed").trim()
+        templateStatus = ""
+        return
+      }
+      try {
+        templateError = ""
+        if (action === "template-list") templates = JSON.parse(stdout)
+        else if (action === "template-create") {
+          var created = JSON.parse(stdout)
+          updateProject(context.projectId, { templateId: created.id })
+          refreshTemplates()
+          openTemplateFile(created.path)
+          templateStatus = "Created " + created.id
+        } else if (action === "template-preview" || action === "template-path") {
+          openTemplateFile(String(stdout).trim())
+          templateStatus = action === "template-preview" ? "Preview opened (saved project settings)" : "Template opened"
+        } else templateStatus = String(stdout).trim()
+      } catch (error) { templateError = "Could not read template response: " + error }
+    } else if (action === "status") {
       if (exitCode === 0) applyStatus(stdout)
       else applyBackendError(outputSummary(stdout, stderr))
     } else if (action === "diagnostics") {
@@ -127,6 +156,14 @@ Item {
     } else {
       backendError = exitCode !== 0 ? outputSummary(stdout, stderr) || "OmaTracker command failed" : ""
       actionFinished(action, exitCode === 0)
+      if (action === "project-update")
+        projectUpdateError = exitCode === 0 ? "" : outputSummary(stdout, stderr) || "Could not save project settings"
+      if (exitCode === 0 && (action === "project-select" || action === "project-create"))
+        projectUpdateError = ""
+      if (action === "project-update") {
+        templateError = exitCode !== 0 ? String(stderr || stdout || "Could not save project settings").trim() : ""
+        templateStatus = exitCode === 0 ? "Project settings saved" : ""
+      }
       refresh()
       if (action === "report-timer") enqueue("diagnostics", ["diagnostics"], { checkReports: true })
     }
@@ -163,6 +200,7 @@ Item {
       if (!next || !next.state) throw new Error("status output has no state")
       state = next.state
       activeProject = next.activeProject || null
+      activeProjectEstimate = next.activeProjectEstimate || null
       activeTasks = Array.isArray(next.activeTasks) ? next.activeTasks : []
       runningTasks = Array.isArray(next.runningTasks) ? next.runningTasks : []
       preferences = next.preferences || ({ hourlyClick: true, volume: 25, reducedMotion: false })
@@ -209,8 +247,16 @@ Item {
     if (changes.clientName !== undefined) args.push("--client-name", String(changes.clientName))
     if (changes.companyName !== undefined) args.push("--company-name", String(changes.companyName))
     if (changes.templateId !== undefined) args.push("--template-id", String(changes.templateId))
+    if (changes.accentColor !== undefined) args.push("--accent-color", String(changes.accentColor))
+    if (changes.paper !== undefined) args.push("--paper", String(changes.paper))
+    if (changes.logoPath !== undefined) args.push("--logo-path", String(changes.logoPath))
     if (changes.exportWeekly !== undefined) args.push("--export-weekly", String(changes.exportWeekly))
     if (changes.exportMonthly !== undefined) args.push("--export-monthly", String(changes.exportMonthly))
+    if (changes.clearRate === true) args.push("--clear-rate")
+    else {
+      if (changes.hourlyRate !== undefined) args.push("--hourly-rate", String(changes.hourlyRate))
+      if (changes.currency !== undefined) args.push("--currency", String(changes.currency))
+    }
     enqueue("project-update", args, {})
   }
 
@@ -226,6 +272,30 @@ Item {
   function previewClick(volume) {
     if (sound.item) sound.item.play(volume)
     else feedbackError = "Audio is unavailable. Check Qt Multimedia and your audio output."
+  }
+
+  function refreshTemplates() {
+    enqueue("template-list", ["template", "list", "--json"], {})
+  }
+
+  function createTemplate(name, from, projectId) {
+    templateError = ""
+    enqueue("template-create", ["template", "create", name, "--from", from], { projectId: projectId })
+  }
+
+  function previewTemplate(id, projectId) {
+    templateError = ""
+    templateStatus = "Generating preview…"
+    enqueue("template-preview", ["template", "preview", id, "--project", projectId], {})
+  }
+
+  function editTemplate(id) {
+    enqueue("template-path", ["template", "path", id], {})
+  }
+
+  function openTemplateFile(path) {
+    var url = "file://" + path.split("/").map(function(part) { return encodeURIComponent(part) }).join("/")
+    if (!Qt.openUrlExternally(url)) templateError = "Could not open " + path
   }
 
   function startTimer(id) {
