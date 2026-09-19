@@ -1,6 +1,7 @@
 # Plan 05: Preview opening and template validation
 
-Status: Proposed. Priority: P1. Skill UX first, focused runtime support second.
+Status: Implemented. Priority: P1. Automated checks passed; real desktop dispatch
+was exercised, with visible-window confirmation still pending.
 
 ## Goal and evidence
 
@@ -36,43 +37,43 @@ reading it establishes renderability, not a completed visual inspection.
 
 ### Phase A: Recipes and validation guidance
 
-- [ ] Add the intent table and refresh/render distinction to the skill workflows.
-- [ ] Reuse known PDF paths when the artifact still exists and relevant inputs are
+- [x] Add the intent table and refresh/render distinction to the skill workflows.
+- [x] Reuse known PDF paths when the artifact still exists and relevant inputs are
   known unchanged. Regenerate when freshness is uncertain; do not infer freshness
   from the invoice ID alone.
-- [ ] Require a rendered inspection after changing a template. For an unchanged
+- [x] Require a rendered inspection after changing a template. For an unchanged
   template, inspect a new preview when content/layout differences warrant it.
-- [ ] Document that `template.validate` compiles representative fixture data.
+- [x] Document that `template.validate` compiles representative fixture data.
   Explain why it can pass while unintended literal text appears in the PDF.
-- [ ] Add a correct Typst footer example showing `#text`, `#h`, and expression
+- [x] Add a correct Typst footer example showing `#text`, `#h`, and expression
   interpolation inside content blocks.
 
 ### Phase B: Reliable desktop opening
 
-- [ ] Review `Service.qml::openTemplateFile` and existing desktop-opening behavior
+- [x] Review `Service.qml::openTemplateFile` and existing desktop-opening behavior
   before choosing a CLI helper location; avoid divergent path/URI handling.
-- [ ] Add a narrowly scoped opener, provisionally `artifact.open`, or an equivalent
+- [x] Add a narrowly scoped opener, provisionally `artifact.open`, or an equivalent
   documented helper. Proposed behavior: accept an explicit existing local PDF,
   dispatch through the platform opener, and return promptly with launch status.
-- [ ] Detach long-lived viewer execution and its inherited output streams while
+- [x] Detach long-lived viewer execution and its inherited output streams while
   preserving actionable launch failures. A bare shell background operator is not
   sufficient evidence that the tool will return promptly.
-- [ ] Report “launch requested” separately from “document visibly opened”. Retain
+- [x] Report “launch requested” separately from “document visibly opened”. Retain
   the PDF path as a usable result if desktop integration is unavailable.
-- [ ] Test paths with spaces and non-ASCII characters, missing files, headless
+- [x] Test paths with spaces and non-ASCII characters, missing files, headless
   sessions, and missing associations without launching real GUI programs in tests.
 
 ### Phase C: Stronger evidence and reusable branding
 
-- [ ] Add a regression fixture with compiling-but-literal footer markup. Where a
+- [x] Add a regression fixture with compiling-but-literal footer markup. Where a
   PDF text extractor is available, verify known content and detect obvious leaked
   markup. Surface heuristic findings as warnings rather than proof of bad layout.
-- [ ] If validation returns richer metadata, preserve `valid` compatibility and
+- [x] If validation returns richer metadata, preserve `valid` compatibility and
   explicitly identify compile checks versus text checks and visual review.
-- [ ] Record optional template metadata: client, source URL, logo origin, palette,
+- [x] Record optional template metadata: client, source URL, logo origin, palette,
   and review date. Only record provenance actually established by the workflow.
   Existing metadata-free templates remain usable.
-- [ ] Prefer one suitable existing template before reading every alternative.
+- [x] Prefer one suitable existing template before reading every alternative.
   When website matching is requested, verify the supplied website or explain that
   an existing local asset was reused without website verification.
 
@@ -124,3 +125,28 @@ work, refresh stale GitNexus data, and run upstream impact analysis. A CLI agent
 action is not automatically an HTTP route; use route-specific impact checks if an
 actual API route handler is changed. Analyze graph changes before any requested
 commit. Keep source changes and installed-skill rollout in sync.
+
+## Implementation and verification record
+
+- Implemented in `feat/preview-validation`, in a separate worktree, and merged
+  with the existing local refactor after testing their combined source tree.
+- `artifact.open` accepts a local PDF path, follows the QML file-URL encoding,
+  detaches streams/process group and observes immediate dispatch errors for
+  250 ms. It preserves the path and distinguishes launch status from visibility.
+- `template.validate` retains `valid`, adds compile/text/visual evidence, and
+  reports optional text extraction as skipped when unavailable. The real Typst
+  regression verifies literal-footer warnings disappear after fixing prefixes.
+- Preview reuse and optional `metadata.json` provenance are workflow-level;
+  there is no persistent cache or required template metadata migration.
+- Full `make check` passed on the feature and combined integration: 96 Rust tests
+  in the latter, formatting, Clippy, five Typst fixtures, plugin validation,
+  QML/UI checks and installation checks. The offscreen UI suite skips its existing
+  Wayland-only popup case. The merged source tree was verified byte-for-byte
+  against the tested integration before rebuilding the bundled binary.
+- Real desktop smoke: an encoded path containing a space and `é` returned
+  `launch_requested` in 0.26 s. A visible viewer window could not be confirmed;
+  this is not recorded as a successful visual-open check. The invoice PDF was
+  separately inspected and the broken fixture's literal text was confirmed.
+- Rebuilt the local CLI and updated the existing OpenCode skill through its
+  managed installer; a subsequent dry run reported `unchanged`. Restart OpenCode
+  to load the updated skill.
