@@ -122,7 +122,7 @@ the path; do not claim the PDF opened. Do not use retry keys for viewer launches
 | Add historical work | [Dated-entry example and billing checks](../../AGENT_API.md#add-dated-work) |
 | Record many dated tasks | [Tracking recipe](references/workflows.md#tracking-and-corrections); use supported per-task/per-entry requests |
 | Prepare/send an invoice | [Invoice recipe](references/workflows.md#invoice-preparation) |
-| Show an existing preview | [Existing invoice preview](references/workflows.md#show-an-existing-invoice-preview) |
+| Show an existing preview | [Preview recipe](references/workflows.md#showing-and-reviewing-previews) |
 | Customize a template | [Invoice template contract](../../TEMPLATES.md#invoice-contract-version-1) |
 | Set up a client/project | [Setup recipe](references/workflows.md#new-client-and-project) |
 | Rename/delete, including archives | [Entity recipe](references/workflows.md#rename-or-delete-tasks-projects-and-clients) |
