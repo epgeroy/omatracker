@@ -76,6 +76,8 @@ widget's added transitions; Omarchy owns the outer popup fade). Preferences and
 the atomic cross-panel notification checkpoint live in `<dataPath>.feedback.json`,
 separate from the uploaded ledger. Audio uses Qt Multimedia and the bundled
 original `sounds/wood-click.wav`; regenerate it with `python tests/generate-click.py`.
+Preview playback displays the selected output and volume, then completion or an
+error. The player follows the system default audio output when it changes.
 
 Try the UI using disposable data, including a click in about 20 seconds:
 

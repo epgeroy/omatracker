@@ -75,10 +75,28 @@ live shell theme instead.
 make check
 python tests/ui-check.py --wayland
 python tests/ui-check.py --preview --hour-demo --smoke
+python tests/audio-output-check.py
 ```
 
 The first command runs Rust, Clippy, Typst, manifest, service and offscreen UI
 checks. The second also tests the actual layer-shell popup on the current desktop.
-The third checks real backend → service → audio dispatch at an hour boundary,
-at volume zero, then exits automatically. Human listening is still needed to
-judge the wooden click's tone and volume.
+The third checks real backend → service → completed playback at an hour boundary,
+at volume zero, then exits automatically. It waits for completion rather than
+exiting immediately after requesting playback. The fourth requires `pactl` and
+`parec`: it records only a temporary virtual sink and verifies that three Qt
+playbacks produce three non-silent bursts. Human listening is still needed to
+judge the wooden click's tone and volume on the selected physical output.
+
+## If a click is silent
+
+Open Preferences and use **Preview wooden click**. The status now displays the
+output device, app volume, and playback completion; errors remain visible even
+when periodic milestone polling succeeds. The disposable preview also prints
+these diagnostics and the hourly milestone to its terminal.
+
+Check that the displayed output is the device you are listening to. The player
+follows the system default when it changes. App volume and the system output's
+volume/mute are separate. A completed playback confirms Qt consumed the sound;
+it cannot confirm physical speakers/headphones reproduced it. The sound includes
+a short silent lead-in/tail and a fuller 150 ms audible body so it is less easily
+lost on short-lived output streams.

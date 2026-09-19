@@ -214,7 +214,7 @@ Item {
       Caption {
         objectName: "errorMessage"
         visible: text !== ""
-        text: root.tracker.backendError || root.tracker.syncError || root.tracker.feedbackError || ""
+        text: root.tracker.backendError || root.tracker.syncError || root.tracker.feedbackError || root.tracker.audioError || ""
         color: Color.urgent
       }
       Action {
@@ -655,6 +655,7 @@ Item {
         input.validator: IntValidator { bottom: 0; top: 100 }
       }
       Action { text: "Preview wooden click"; enabled: volume.input.acceptableInput; onClicked: root.tracker.previewClick(Number(volume.text)) }
+      Caption { visible: text !== ""; text: root.tracker.audioStatus || "" }
       Toggle { id: motion; label: "Reduced motion"; Component.onCompleted: checked = root.preferences.reducedMotion }
       Action {
         text: "Save preferences"; bordered: true; enabled: volume.input.acceptableInput && root.pendingAction === ""

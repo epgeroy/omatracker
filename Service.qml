@@ -27,8 +27,11 @@ Item {
   property var preferences: ({ hourlyClick: true, volume: 25, reducedMotion: false })
   property bool feedbackEnabled: true
   property string feedbackError: ""
+  property string audioError: ""
+  property string audioStatus: ""
   signal actionFinished(string action, bool success)
   signal hourReached(int hours)
+  signal audioFinished()
   property bool loaded: false
   property real nowMs: Date.now()
   property real statusSnapshotMs: nowMs
@@ -270,8 +273,9 @@ Item {
   }
 
   function previewClick(volume) {
+    audioError = ""
     if (sound.item) sound.item.play(volume)
-    else feedbackError = "Audio is unavailable. Check Qt Multimedia and your audio output."
+    else audioError = "Audio is unavailable. Check Qt Multimedia and your audio output."
   }
 
   function refreshTemplates() {
@@ -393,11 +397,18 @@ Item {
     id: sound
     active: root.feedbackEnabled
     source: "HourlySound.qml"
-    onStatusChanged: if (status === Loader.Error) root.feedbackError = "Qt Multimedia audio could not be loaded"
+    onStatusChanged: if (status === Loader.Error) root.audioError = "Qt Multimedia audio could not be loaded"
   }
   Connections {
     target: sound.item
-    function onFailed(message) { root.feedbackError = message }
+    function onFailed(message) { root.audioError = message; root.audioStatus = "Playback failed" }
+    function onStarted(output, percent) {
+      root.audioStatus = percent === 0 ? "Click is muted (0%)" : "Playing click · " + output + " · " + percent + "%"
+    }
+    function onFinished() {
+      root.audioStatus = "Click playback completed · " + sound.item.outputName
+      root.audioFinished()
+    }
   }
 
   Timer {
