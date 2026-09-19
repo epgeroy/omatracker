@@ -1,10 +1,10 @@
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand};
 use omatracker::{
-    ProjectChanges, add_task, check_reports, create_project, default_data_path, edit_task,
-    export_report, install_report_timer, remove_report_timer, remove_task, reset_active_project,
-    reset_task, retry_reports, select_project, start_task, status, stop_task, sync_state,
-    update_drive, update_project,
+    ProjectChanges, add_task, check_reports, create_project, default_data_path, diagnostics,
+    edit_task, export_report, install_report_timer, presentation_status, remove_report_timer,
+    remove_task, reset_active_project, reset_task, retry_reports, select_project, start_task,
+    status, stop_task, sync_state, update_drive, update_project,
 };
 use std::path::PathBuf;
 
@@ -29,7 +29,12 @@ enum Commands {
     Status {
         #[arg(long)]
         json: bool,
+        /// Omit historical ledger data and external setup checks from JSON output.
+        #[arg(long, requires = "json")]
+        compact: bool,
     },
+    /// Print dependency and background-scheduler diagnostics as JSON.
+    Diagnostics,
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
@@ -122,7 +127,8 @@ enum DriveCommand {
         remote: String,
         #[arg(long, default_value = "OmaTracker")]
         folder: String,
-        #[arg(long, default_value_t = true)]
+        // The QML client always sends an explicit true/false value.
+        #[arg(long, default_value_t = true, action = ArgAction::Set)]
         sync_on_startup: bool,
     },
 }
@@ -152,14 +158,22 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let data_path = cli.data_path.unwrap_or(default_data_path()?);
     match cli.command {
-        Commands::Status { json } => {
-            let result = status(&data_path)?;
-            if json {
-                println!("{}", serde_json::to_string(&result)?);
+        Commands::Status { json, compact } => {
+            if compact {
+                println!(
+                    "{}",
+                    serde_json::to_string(&presentation_status(&data_path)?)?
+                );
+            } else if json {
+                println!("{}", serde_json::to_string(&status(&data_path)?)?);
             } else {
-                println!("{}", result.active_project_seconds);
+                println!(
+                    "{}",
+                    presentation_status(&data_path)?.active_project_seconds
+                );
             }
         }
+        Commands::Diagnostics => println!("{}", serde_json::to_string(&diagnostics(&data_path))?),
         Commands::Project { command } => match command {
             ProjectCommand::Create { name } => println!("{}", create_project(&data_path, &name)?),
             ProjectCommand::Select { id } => select_project(&data_path, &id)?,

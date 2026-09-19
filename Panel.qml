@@ -27,6 +27,9 @@ Panel {
   readonly property var projects: trackerState.projects || []
   property bool projectsVisible: false
   property bool settingsVisible: false
+  // Status responses deserialize a new project object each time. Track its id
+  // so a refresh of the current project cannot erase an in-progress edit.
+  property string settingsProjectId: ""
 
   // Row the keyboard cursor is on. `cursorActive` stays false until the user
   // actually presses j/k so a freshly opened panel isn't pre-highlighted.
@@ -110,6 +113,7 @@ Panel {
 
   function seedSettingsFields() {
     if (!root.activeProject) return
+    root.settingsProjectId = root.activeProject.id
     projectNameField.text = root.activeProject.name
     clientNameField.text = root.activeProject.clientName
     companyNameField.text = root.activeProject.companyName
@@ -134,7 +138,11 @@ Panel {
     root.tracker.updateDrive(driveRemoteField.text, driveFolderField.text, startupSyncBox.checked)
   }
 
-  onActiveProjectChanged: if (root.projectsVisible) Qt.callLater(root.seedSettingsFields)
+  onActiveProjectChanged: {
+    if (root.projectsVisible && root.activeProject
+      && root.activeProject.id !== root.settingsProjectId)
+      Qt.callLater(root.seedSettingsFields)
+  }
   onTasksChanged: {
     root.clampCursor()
     if (root.editingId !== "" && TaskModel.indexOfId(root.tasks, root.editingId) < 0) root.cancelEdit()
@@ -553,7 +561,6 @@ Panel {
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
                   root.tracker.selectProject(projectOption.modelData.id)
-                  Qt.callLater(root.seedSettingsFields)
                 }
               }
             }

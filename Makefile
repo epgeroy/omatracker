@@ -1,4 +1,4 @@
-.PHONY: backend check template-check
+.PHONY: backend check template-check qml-check
 
 backend:
 	cargo build --release
@@ -10,7 +10,14 @@ check:
 	cargo clippy -- -D warnings
 	$(MAKE) template-check
 	omarchy plugin validate .
-	timeout 2 quickshell --no-color --path Service.qml || test $$? -eq 124
+	$(MAKE) qml-check
+
+qml-check:
+	@temporary=$$(mktemp -d); \
+	trap 'rm -rf "$$temporary"' EXIT; \
+	OMATRACKER_TEST_DIR="$$temporary" QT_QPA_PLATFORM=offscreen \
+	  timeout 15 quickshell --no-color --path ServiceTest.qml && \
+	  test -f "$$temporary/passed"
 
 template-check:
 	@if command -v typst >/dev/null; then \

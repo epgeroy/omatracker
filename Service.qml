@@ -1,6 +1,5 @@
 import QtQuick
 import Quickshell
-import Quickshell.Io
 
 // The Rust CLI owns all durable state, report generation, and Drive uploads.
 // This service only serializes UI requests and keeps a presentation snapshot
@@ -15,6 +14,7 @@ Item {
   readonly property string sourcePath: localFilePath(Qt.resolvedUrl("."))
   readonly property string backendPath: sourcePath + "/bin/omatracker"
   property string dataPath: home + "/.config/omarchy/omatracker.json"
+  property var backendCommand: [backendPath, "--data-path", dataPath]
   property bool configured: false
 
   property var state: emptyState()
@@ -32,20 +32,12 @@ Item {
   property string syncStatus: "Not synced yet"
   property string syncError: ""
   property bool backgroundChecksEnabled: false
+  property bool backgroundChecksActive: false
   property string backendError: ""
   property bool startupHandled: false
+  property bool diagnosticsReady: false
 
-  property string currentAction: ""
-  property var currentContext: ({})
-  property var pendingActions: []
-  property string processOutput: ""
-  property string processError: ""
-  property bool processStdoutFinished: false
-  property bool processStderrFinished: false
-  property bool processExited: false
-  property int processExitCode: -1
-
-  readonly property bool busy: currentAction !== ""
+  readonly property bool busy: foregroundQueue.busy || backgroundQueue.busy
   readonly property bool anyRunning: runningTimers > 0
   readonly property int elapsedSinceStatus: Math.max(0, Math.floor((nowMs - statusSnapshotMs) / 1000))
   readonly property int displayTotalSeconds: totalTrackedSeconds + runningTimers * elapsedSinceStatus
@@ -96,67 +88,21 @@ Item {
     configured = true
     loaded = false
     startupHandled = false
-    pendingActions = []
+    diagnosticsReady = false
+    foregroundQueue.reset()
+    backgroundQueue.reset()
     refresh()
+    enqueue("diagnostics", ["diagnostics"], {})
   }
 
   function refresh() {
-    enqueue("status", ["status", "--json"], {})
+    enqueue("status", ["status", "--json", "--compact"], {})
   }
 
   function enqueue(action, args, context) {
-    if (action === "status") {
-      if (currentAction === "status") return
-      for (var i = 0; i < pendingActions.length; i++)
-        if (pendingActions[i].action === "status") return
-    }
-    pendingActions = pendingActions.concat([{
-      action: action,
-      args: args,
-      context: context || ({})
-    }])
-    startNextAction()
-  }
-
-  function startNextAction() {
-    if (currentAction !== "" || pendingActions.length === 0) return
-    var next = pendingActions[0]
-    pendingActions = pendingActions.slice(1)
-    currentAction = next.action
-    currentContext = next.context
-    processOutput = ""
-    processError = ""
-    processStdoutFinished = false
-    processStderrFinished = false
-    processExited = false
-    processExitCode = -1
-    commandProcess.command = ["sh", "-c", "exec \"$@\"", "omatracker", backendPath, "--data-path", dataPath].concat(next.args)
-    commandProcess.running = true
-    processTimeout.restart()
-  }
-
-  function finishProcess() {
-    if (!processExited || !processStdoutFinished || !processStderrFinished || currentAction === "") return
-    var action = currentAction
-    var context = currentContext
-    var exitCode = processExitCode
-    var stdout = processOutput
-    var stderr = processError
-    currentAction = ""
-    currentContext = ({})
-    processTimeout.stop()
-    handleProcess(action, context, exitCode, stdout, stderr)
-  }
-
-  function failCurrentProcess(message) {
-    if (currentAction === "") return
-    var action = currentAction
-    var context = currentContext
-    currentAction = ""
-    currentContext = ({})
-    commandProcess.running = false
-    processTimeout.stop()
-    handleProcess(action, context, -1, "", message)
+    var background = action === "sync" || action === "diagnostics" || action.indexOf("report-") === 0
+    var queue = background ? backgroundQueue : foregroundQueue
+    queue.enqueue(action, args, context)
   }
 
   function outputSummary(stdout, stderr) {
@@ -168,11 +114,39 @@ Item {
     if (action === "status") {
       if (exitCode === 0) applyStatus(stdout)
       else applyBackendError(outputSummary(stdout, stderr))
+    } else if (action === "diagnostics") {
+      if (exitCode === 0) applyDiagnostics(stdout, context)
+      else setupStatus = outputSummary(stdout, stderr) || "Could not check OmaTracker setup"
     } else {
       if (exitCode !== 0) backendError = outputSummary(stdout, stderr) || "OmaTracker command failed"
-      enqueue("status", ["status", "--json"], {})
+      refresh()
+      if (action === "report-timer") enqueue("diagnostics", ["diagnostics"], { checkReports: true })
     }
-    startNextAction()
+  }
+
+  function handleStartup() {
+    if (startupHandled || !loaded || !diagnosticsReady) return
+    startupHandled = true
+    if (!backgroundChecksActive) enqueue("report-check", ["report", "check"], {})
+    if (state.drive && state.drive.syncOnStartup === true) enqueue("sync", ["sync"], {})
+  }
+
+  function applyDiagnostics(raw, context) {
+    try {
+      var next = JSON.parse(raw)
+      setupStatus = String(next.setupStatus || "OmaTracker backend is ready")
+      backgroundChecksEnabled = next.backgroundChecksEnabled === true
+      backgroundChecksActive = next.backgroundChecksActive === true
+      diagnosticsReady = true
+      var alreadyStarted = startupHandled
+      handleStartup()
+      if (alreadyStarted && context.checkReports) {
+        if (!backgroundChecksActive) enqueue("report-check", ["report", "check"], {})
+        else refresh() // Pick up reports completed by the systemd worker.
+      }
+    } catch (error) {
+      setupStatus = "Could not read OmaTracker setup: " + error
+    }
   }
 
   function applyStatus(raw) {
@@ -190,18 +164,12 @@ Item {
         if (activeTasks[i].running === true) activeProjectRunningTimers++
       nowMs = Math.max(0, Number(next.nowMs) || Date.now())
       statusSnapshotMs = nowMs
-      setupStatus = String(next.setupStatus || "OmaTracker backend is ready")
       reportStatus = String(next.reportStatus || "No PDF reports queued")
       syncStatus = String(next.syncStatus || "Not synced yet")
       syncError = String(next.syncError || "")
-      backgroundChecksEnabled = next.backgroundChecksEnabled === true
       backendError = ""
       loaded = true
-      if (!startupHandled) {
-        startupHandled = true
-        enqueue("report-check", ["report", "check"], {})
-        if (state.drive && state.drive.syncOnStartup === true) enqueue("sync", ["sync"], {})
-      }
+      handleStartup()
     } catch (error) {
       applyBackendError("Could not read OmaTracker status: " + error)
     }
@@ -292,31 +260,23 @@ Item {
 
   Component.onCompleted: root.configure(root.dataPath)
 
-  Process {
-    id: commandProcess
-
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.processOutput = String(text || "")
-        root.processStdoutFinished = true
-        root.finishProcess()
-      }
+  BackendQueue {
+    id: foregroundQueue
+    commandPrefix: root.backendCommand
+    onCompleted: function(action, context, exitCode, stdout, stderr) {
+      root.handleProcess(action, context, exitCode, stdout, stderr)
     }
+  }
 
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.processError = String(text || "")
-        root.processStderrFinished = true
-        root.finishProcess()
-      }
-    }
-
-    onExited: function(exitCode) {
-      root.processExitCode = exitCode
-      root.processExited = true
-      root.finishProcess()
+  BackendQueue {
+    id: backgroundQueue
+    commandPrefix: root.backendCommand
+    paused: foregroundQueue.busy || foregroundQueue.pendingActions.length > 0
+    // A backlog can legitimately take longer than two minutes. It no longer
+    // blocks controls, so let the backend finish instead of killing a batch.
+    timeoutMs: 0
+    onCompleted: function(action, context, exitCode, stdout, stderr) {
+      root.handleProcess(action, context, exitCode, stdout, stderr)
     }
   }
 
@@ -334,13 +294,6 @@ Item {
     interval: 15 * 60 * 1000
     repeat: true
     running: root.loaded
-    onTriggered: root.enqueue("report-check", ["report", "check"], {})
-  }
-
-  Timer {
-    id: processTimeout
-    interval: 120000
-    repeat: false
-    onTriggered: root.failCurrentProcess("OmaTracker command timed out after two minutes")
+    onTriggered: root.enqueue("diagnostics", ["diagnostics"], { checkReports: true })
   }
 }

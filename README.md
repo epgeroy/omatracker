@@ -58,6 +58,8 @@ the widget's `dataPath` setting.
 
 ```bash
 bin/omatracker status --json
+bin/omatracker status --json --compact
+bin/omatracker diagnostics
 bin/omatracker project create "Client A"
 bin/omatracker project select <project-id>
 bin/omatracker task add "Design"
@@ -71,7 +73,9 @@ bin/omatracker sync
 bin/omatracker service install
 ```
 
-All mutations acquire an advisory lock and replace the JSON ledger atomically.
+All mutations acquire an advisory lock and replace the JSON ledger atomically
+when state actually changes. No-op commands and idle report checks do not
+rewrite the ledger.
 The CLI migrates the version 1 task list into the `Unassigned` project on its
 first write. Historical cumulative totals are retained as undated legacy time,
 so they never appear in a date-based report.
@@ -79,9 +83,20 @@ so they never appear in a date-based report.
 `bin/omatracker service install` creates and enables a persistent user-level
 systemd timer, which runs `report check` every 15 minutes even when Quickshell
 is closed. Use `bin/omatracker service remove` to disable and delete it. The
-panel exposes the same background-check setting and also requests `report
-check` while it is running; the CLI is the sole authority for which reports are
-due.
+panel exposes the same background-check setting and requests `report check`
+while it is running if there is no active systemd timer for its ledger. The CLI
+is the sole authority for which reports are due. Checks derive completed,
+occupied periods from entries, including histories longer than three years and
+late entries in previously empty periods.
+
+The panel uses `status --json --compact`, which calculates task totals in one
+aggregation pass and omits historical entries and reports. Dependency and timer
+diagnostics are checked separately at startup, every 15 minutes, and after timer
+settings change. The original full `status --json` response remains available.
+
+Reports, uploads, and diagnostics run in a separate command queue so starting
+and stopping timers stays responsive. Ledger uploads use an immutable temporary
+snapshot, allowing tracking to continue during a transfer.
 
 ## Typst and Google Drive
 
@@ -108,6 +123,12 @@ bin/omatracker drive update --remote omatracker --folder OmaTracker --sync-on-st
 Report snapshots, generated Typst sources, and PDFs live in
 `~/.cache/omarchy/omatracker/` until uploaded. Reports are immutable snapshots
 of the project metadata, selected template, and time entries at queue time.
+Upload retries reuse a successfully rendered PDF; a missing PDF is rendered
+again. A per-ledger worker lock prevents a retry from resetting an export that
+another process is still handling.
+
+`make check` includes backend regression tests and an isolated QML concurrency
+check using a fake backend. It does not run the panel service against your ledger.
 
 ## Quickshell IPC
 

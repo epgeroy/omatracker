@@ -3,7 +3,7 @@ use chrono::{Datelike, Days, Local, NaiveDate, TimeZone, Timelike};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ fn default_sync_status() -> String {
     "Not synced yet".to_owned()
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Project {
     pub id: String,
@@ -87,9 +87,11 @@ pub struct Report {
     pub completed_at: i64,
     pub attempts: i64,
     pub last_error: String,
+    // A successful render survives upload failures. Older ledgers default to false.
+    pub rendered: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Drive {
     pub remote: String,
@@ -186,6 +188,39 @@ pub struct Status {
     pub sync_error: String,
     pub background_checks_enabled: bool,
     pub dependencies: DependencyStatus,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentationState {
+    pub version: u32,
+    pub active_project_id: String,
+    pub projects: Vec<Project>,
+    pub drive: Drive,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentationStatus {
+    pub state: PresentationState,
+    pub now_ms: i64,
+    pub active_project: Option<Project>,
+    pub active_tasks: Vec<TaskView>,
+    pub total_tracked_seconds: i64,
+    pub active_project_seconds: i64,
+    pub running_timers: usize,
+    pub report_status: String,
+    pub sync_status: String,
+    pub sync_error: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Diagnostics {
+    pub setup_status: String,
+    pub dependencies: DependencyStatus,
+    pub background_checks_enabled: bool,
+    pub background_checks_active: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -638,6 +673,13 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
 }
 
 fn lock_file(path: &Path) -> Result<File> {
+    let lock = open_lock_file(path)?;
+    lock.lock_exclusive()
+        .with_context(|| format!("could not lock {}", path.display()))?;
+    Ok(lock)
+}
+
+fn open_lock_file(path: &Path) -> Result<File> {
     let parent = path.parent().context("data path has no parent directory")?;
     fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
     let lock_path = PathBuf::from(format!("{}.lock", path.display()));
@@ -648,17 +690,28 @@ fn lock_file(path: &Path) -> Result<File> {
         .truncate(false)
         .open(&lock_path)
         .with_context(|| format!("could not open {}", lock_path.display()))?;
-    lock.lock_exclusive()
-        .with_context(|| format!("could not lock {}", lock_path.display()))?;
     Ok(lock)
 }
 
-fn mutate_state<T>(path: &Path, mutate: impl FnOnce(&mut State) -> Result<T>) -> Result<T> {
+enum Mutation<T> {
+    Unchanged(T),
+    Changed(T),
+}
+
+fn mutate_state<T>(
+    path: &Path,
+    mutate: impl FnOnce(&mut State) -> Result<Mutation<T>>,
+) -> Result<T> {
     let lock = lock_file(path)?;
     let mut state = read_state(path)?;
-    let result = mutate(&mut state)?;
-    normalize_state(&mut state);
-    write_state(path, &state)?;
+    let result = match mutate(&mut state)? {
+        Mutation::Unchanged(result) => result,
+        Mutation::Changed(result) => {
+            normalize_state(&mut state);
+            write_state(path, &state)?;
+            result
+        }
+    };
     lock.unlock().context("could not unlock state")?;
     Ok(result)
 }
@@ -671,21 +724,29 @@ fn locked_state(path: &Path) -> Result<State> {
 }
 
 pub fn task_seconds(state: &State, task: &Task, now: i64) -> i64 {
+    task_seconds_from_entries(
+        task,
+        state
+            .entries
+            .iter()
+            .filter(|entry| entry.task_id == task.id),
+        now,
+    )
+}
+
+fn task_seconds_from_entries<'a>(
+    task: &Task,
+    entries: impl IntoIterator<Item = &'a Entry>,
+    now: i64,
+) -> i64 {
     let since = task.display_since.max(0);
     let mut total = if since > 0 {
         0
     } else {
         task.legacy_seconds.max(0)
     };
-    for entry in &state.entries {
-        if entry.task_id != task.id {
-            continue;
-        }
-        total += if since > 0 {
-            overlap_seconds(entry.started_at, entry.ended_at, since, entry.ended_at)
-        } else {
-            entry.seconds.max(0)
-        };
+    for entry in entries {
+        total += entry_display_seconds(entry, since);
     }
     if task.running {
         total += ((now - task.started_at.max(since)) / 1000).max(0);
@@ -693,13 +754,42 @@ pub fn task_seconds(state: &State, task: &Task, now: i64) -> i64 {
     total
 }
 
+fn entry_display_seconds(entry: &Entry, since: i64) -> i64 {
+    if since > 0 {
+        overlap_seconds(entry.started_at, entry.ended_at, since, entry.ended_at)
+    } else {
+        entry.seconds.max(0)
+    }
+}
+
 pub fn total_seconds(state: &State, now: i64, project_id: Option<&str>) -> i64 {
+    let totals = task_totals(state, now);
     state
         .tasks
         .iter()
-        .filter(|task| project_id.is_none_or(|project_id| task.project_id == project_id))
-        .map(|task| task_seconds(state, task, now))
+        .zip(totals)
+        .filter(|(task, _)| project_id.is_none_or(|project_id| task.project_id == project_id))
+        .map(|(_, seconds)| seconds)
         .sum()
+}
+
+fn task_totals(state: &State, now: i64) -> Vec<i64> {
+    // Index tasks rather than entries: auxiliary memory stays proportional to
+    // task count, even when most of the ledger is historical time entries.
+    let mut task_indices: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut totals = Vec::with_capacity(state.tasks.len());
+    for (index, task) in state.tasks.iter().enumerate() {
+        task_indices.entry(&task.id).or_default().push(index);
+        totals.push(task_seconds_from_entries(task, std::iter::empty(), now));
+    }
+    for entry in &state.entries {
+        if let Some(indices) = task_indices.get(entry.task_id.as_str()) {
+            for &index in indices {
+                totals[index] += entry_display_seconds(entry, state.tasks[index].display_since);
+            }
+        }
+    }
+    totals
 }
 
 pub fn overlap_seconds(start_at: i64, end_at: i64, range_start_at: i64, range_end_at: i64) -> i64 {
@@ -805,7 +895,7 @@ pub fn create_project(path: &Path, name: &str) -> Result<String> {
         state.active_project_id = project.id.clone();
         let id = project.id.clone();
         state.projects.push(project);
-        Ok(id)
+        Ok(Mutation::Changed(id))
     })
 }
 
@@ -814,8 +904,11 @@ pub fn select_project(path: &Path, id: &str) -> Result<()> {
         if !state.projects.iter().any(|project| project.id == id) {
             bail!("project {id} does not exist")
         }
+        if state.active_project_id == id {
+            return Ok(Mutation::Unchanged(()));
+        }
         state.active_project_id = id.to_owned();
-        Ok(())
+        Ok(Mutation::Changed(()))
     })
 }
 
@@ -826,6 +919,7 @@ pub fn update_project(path: &Path, id: &str, changes: ProjectChanges) -> Result<
             .iter_mut()
             .find(|project| project.id == id)
             .with_context(|| format!("project {id} does not exist"))?;
+        let previous = project.clone();
         if let Some(name) = changes.name {
             project.name = name;
         }
@@ -844,7 +938,12 @@ pub fn update_project(path: &Path, id: &str, changes: ProjectChanges) -> Result<
         if let Some(export_monthly) = changes.export_monthly {
             project.export_monthly = export_monthly;
         }
-        Ok(())
+        normalize_project(project);
+        Ok(if *project == previous {
+            Mutation::Unchanged(())
+        } else {
+            Mutation::Changed(())
+        })
     })
 }
 
@@ -868,7 +967,7 @@ pub fn add_task(path: &Path, title: Option<&str>) -> Result<String> {
         };
         let id = task.id.clone();
         state.tasks.push(task);
-        Ok(id)
+        Ok(Mutation::Changed(id))
     })
 }
 
@@ -879,11 +978,12 @@ pub fn start_task(path: &Path, id: &str) -> Result<()> {
             .iter_mut()
             .find(|task| task.id == id)
             .with_context(|| format!("task {id} does not exist"))?;
-        if !task.running {
-            task.running = true;
-            task.started_at = now_ms();
+        if task.running {
+            return Ok(Mutation::Unchanged(()));
         }
-        Ok(())
+        task.running = true;
+        task.started_at = now_ms();
+        Ok(Mutation::Changed(()))
     })
 }
 
@@ -895,7 +995,7 @@ pub fn stop_task(path: &Path, id: &str) -> Result<()> {
             .position(|task| task.id == id)
             .with_context(|| format!("task {id} does not exist"))?;
         if !state.tasks[index].running {
-            return Ok(());
+            return Ok(Mutation::Unchanged(()));
         }
         let now = now_ms();
         let task = state.tasks[index].clone();
@@ -909,7 +1009,7 @@ pub fn stop_task(path: &Path, id: &str) -> Result<()> {
         );
         state.tasks[index].running = false;
         state.tasks[index].started_at = 0;
-        Ok(())
+        Ok(Mutation::Changed(()))
     })
 }
 
@@ -934,7 +1034,7 @@ pub fn reset_task(path: &Path, id: &str) -> Result<()> {
             state.tasks[index].started_at = now;
         }
         state.tasks[index].display_since = now;
-        Ok(())
+        Ok(Mutation::Changed(()))
     })
 }
 
@@ -948,6 +1048,9 @@ pub fn reset_active_project(path: &Path) -> Result<()> {
             .enumerate()
             .filter_map(|(index, task)| (task.project_id == active_project_id).then_some(index))
             .collect();
+        if indices.is_empty() {
+            return Ok(Mutation::Unchanged(()));
+        }
         for index in indices {
             if state.tasks[index].running {
                 let task = state.tasks[index].clone();
@@ -963,7 +1066,7 @@ pub fn reset_active_project(path: &Path) -> Result<()> {
             }
             state.tasks[index].display_since = now;
         }
-        Ok(())
+        Ok(Mutation::Changed(()))
     })
 }
 
@@ -987,7 +1090,7 @@ pub fn remove_task(path: &Path, id: &str) -> Result<()> {
             );
         }
         state.tasks.remove(index);
-        Ok(())
+        Ok(Mutation::Changed(()))
     })
 }
 
@@ -999,6 +1102,7 @@ pub fn edit_task(
 ) -> Result<()> {
     let parsed_duration = add_duration.map(parse_duration).transpose()?;
     mutate_state(path, |state| {
+        let mut changed = false;
         let index = state
             .tasks
             .iter()
@@ -1006,15 +1110,18 @@ pub fn edit_task(
             .with_context(|| format!("task {id} does not exist"))?;
         if let Some(title) = title {
             let title = sanitize_text(title, 160);
-            state.tasks[index].title = if title.is_empty() {
+            let title = if title.is_empty() {
                 "Empty".to_owned()
             } else {
                 title
             };
+            changed = state.tasks[index].title != title;
+            state.tasks[index].title = title;
         }
         if let Some(seconds) = parsed_duration
             && seconds > 0
         {
+            changed = true;
             let now = now_ms();
             let task = state.tasks[index].clone();
             append_entry(
@@ -1026,25 +1133,66 @@ pub fn edit_task(
                 "Manual entry",
             );
         }
-        Ok(())
+        Ok(if changed {
+            Mutation::Changed(())
+        } else {
+            Mutation::Unchanged(())
+        })
     })
 }
 
 pub fn update_drive(path: &Path, remote: &str, folder: &str, sync_on_startup: bool) -> Result<()> {
     mutate_state(path, |state| {
+        let previous = state.drive.clone();
         state.drive.remote = sanitize_text(remote, 80);
         state.drive.folder = sanitize_text(folder, 160);
         if state.drive.folder.is_empty() {
             state.drive.folder = default_drive_folder();
         }
         state.drive.sync_on_startup = sync_on_startup;
-        Ok(())
+        Ok(if state.drive == previous {
+            Mutation::Unchanged(())
+        } else {
+            Mutation::Changed(())
+        })
     })
 }
 
 pub fn status(path: &Path) -> Result<Status> {
     let state = locked_state(path)?;
-    let now = now_ms();
+    let presentation = build_presentation_status(&state, now_ms());
+    let diagnostics = diagnostics(path);
+    Ok(Status {
+        total_tracked_seconds: presentation.total_tracked_seconds,
+        active_project_seconds: presentation.active_project_seconds,
+        running_timers: presentation.running_timers,
+        report_status: presentation.report_status,
+        sync_status: presentation.sync_status,
+        sync_error: presentation.sync_error,
+        background_checks_enabled: diagnostics.background_checks_enabled,
+        state,
+        now_ms: presentation.now_ms,
+        active_project: presentation.active_project,
+        active_tasks: presentation.active_tasks,
+        setup_status: diagnostics.setup_status,
+        dependencies: diagnostics.dependencies,
+    })
+}
+
+pub fn presentation_status(path: &Path) -> Result<PresentationStatus> {
+    Ok(build_presentation_status(&locked_state(path)?, now_ms()))
+}
+
+fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
+    let totals = task_totals(state, now);
+    let total_tracked_seconds = totals.iter().sum();
+    let active_project_seconds = state
+        .tasks
+        .iter()
+        .zip(&totals)
+        .filter(|(task, _)| task.project_id == state.active_project_id)
+        .map(|(_, seconds)| seconds)
+        .sum();
     let active_project = state
         .projects
         .iter()
@@ -1053,13 +1201,33 @@ pub fn status(path: &Path) -> Result<Status> {
     let active_tasks = state
         .tasks
         .iter()
-        .filter(|task| task.project_id == state.active_project_id)
-        .cloned()
-        .map(|task| TaskView {
-            display_seconds: task_seconds(&state, &task, now),
-            task,
+        .zip(totals)
+        .filter(|(task, _)| task.project_id == state.active_project_id)
+        .map(|(task, display_seconds)| TaskView {
+            display_seconds,
+            task: task.clone(),
         })
         .collect();
+    PresentationStatus {
+        state: PresentationState {
+            version: state.version,
+            active_project_id: state.active_project_id.clone(),
+            projects: state.projects.clone(),
+            drive: state.drive.clone(),
+        },
+        now_ms: now,
+        active_project,
+        active_tasks,
+        total_tracked_seconds,
+        active_project_seconds,
+        running_timers: state.tasks.iter().filter(|task| task.running).count(),
+        report_status: report_status_text(state),
+        sync_status: state.sync.status.clone(),
+        sync_error: state.sync.error.clone(),
+    }
+}
+
+pub fn diagnostics(path: &Path) -> Diagnostics {
     let typst_available = command_available("typst");
     let rclone_available = command_available("rclone");
     let setup_status = dependency_status_text(typst_available, rclone_available);
@@ -1068,21 +1236,13 @@ pub fn status(path: &Path) -> Result<Status> {
         rclone_available,
         setup_status: setup_status.clone(),
     };
-    Ok(Status {
-        total_tracked_seconds: total_seconds(&state, now, None),
-        active_project_seconds: total_seconds(&state, now, Some(&state.active_project_id)),
-        running_timers: state.tasks.iter().filter(|task| task.running).count(),
-        report_status: report_status_text(&state),
-        sync_status: state.sync.status.clone(),
-        sync_error: state.sync.error.clone(),
-        background_checks_enabled: report_timer_enabled(),
-        state,
-        now_ms: now,
-        active_project,
-        active_tasks,
+    let (background_checks_enabled, background_checks_active) = report_timer_state(path);
+    Diagnostics {
+        background_checks_enabled,
+        background_checks_active,
         setup_status,
         dependencies,
-    })
+    }
 }
 
 pub fn last_completed_period(period: &str, now: i64) -> Result<Period> {
@@ -1228,6 +1388,7 @@ fn build_snapshot(
 
 fn queue_report(
     state: &mut State,
+    known_keys: &mut HashSet<String>,
     project: &Project,
     period: &str,
     start_at: i64,
@@ -1235,7 +1396,7 @@ fn queue_report(
     include_empty: bool,
 ) -> Result<Option<String>> {
     let key = period_key(&project.id, period, start_at);
-    if state.reports.iter().any(|report| report.key == key) {
+    if known_keys.contains(&key) {
         return Ok(Some(key));
     }
     let snapshot = build_snapshot(state, project, period, start_at, end_at);
@@ -1269,70 +1430,107 @@ fn queue_report(
         completed_at: 0,
         attempts: 0,
         last_error: String::new(),
+        rendered: false,
     });
+    known_keys.insert(key.clone());
     Ok(Some(key))
 }
 
-fn earliest_project_entry(state: &State, project_id: &str) -> Option<i64> {
-    state
+fn containing_period_start(period: &str, timestamp: i64) -> Result<i64> {
+    let date = Local
+        .timestamp_millis_opt(timestamp)
+        .single()
+        .context("entry time is outside the local calendar")?
+        .date_naive();
+    let start = match period {
+        "weekly" => date - Days::new(date.weekday().num_days_from_monday().into()),
+        "monthly" => {
+            NaiveDate::from_ymd_opt(date.year(), date.month(), 1).context("invalid month")?
+        }
+        _ => bail!("period must be weekly or monthly"),
+    };
+    local_midnight(start)
+}
+
+// Derive occupied periods from the ledger rather than walking every calendar
+// period since the first entry. This also finds late manual entries in gaps.
+fn occupied_periods(
+    state: &State,
+    project_id: &str,
+    period: &str,
+    now: i64,
+) -> Result<BTreeSet<i64>> {
+    let cutoff = containing_period_start(period, now)?;
+    let spans = state
         .entries
         .iter()
         .filter(|entry| entry.project_id == project_id)
-        .map(|entry| entry.started_at)
+        .map(|entry| (entry.started_at, entry.ended_at))
         .chain(
             state
                 .tasks
                 .iter()
                 .filter(|task| task.project_id == project_id && task.running)
-                .map(|task| task.started_at),
-        )
-        .filter(|value| *value > 0)
-        .min()
+                .map(|task| (task.started_at, now)),
+        );
+    let mut periods = BTreeSet::new();
+    for (start, end) in spans {
+        let end = end.min(cutoff);
+        if start <= 0 || end - start < 1000 {
+            continue;
+        }
+        let mut current = containing_period_start(period, start)?;
+        while current < end {
+            let next = next_period_start(period, current)?;
+            if overlap_seconds(start, end, current, next) > 0 {
+                periods.insert(current);
+            }
+            current = next;
+        }
+    }
+    Ok(periods)
 }
 
-fn queue_missing_periods(state: &mut State, project: &Project, period: &str) -> Result<()> {
-    let Some(earliest) = earliest_project_entry(state, &project.id) else {
-        return Ok(());
-    };
-    let first = match period {
-        "weekly" => {
-            let period = last_completed_period("weekly", earliest + 7 * 24 * 60 * 60 * 1000)?;
-            period.start_at
+fn queue_missing_periods(
+    state: &mut State,
+    known_keys: &mut HashSet<String>,
+    project: &Project,
+    period: &str,
+    now: i64,
+) -> Result<()> {
+    for start in occupied_periods(state, &project.id, period, now)? {
+        if known_keys.contains(&period_key(&project.id, period, start)) {
+            continue;
         }
-        "monthly" => {
-            let period = last_completed_period("monthly", earliest + 32 * 24 * 60 * 60 * 1000)?;
-            period.start_at
-        }
-        _ => bail!("period must be weekly or monthly"),
-    };
-    let cutoff = match period {
-        "weekly" => last_completed_period("weekly", now_ms())?.end_at,
-        "monthly" => last_completed_period("monthly", now_ms())?.end_at,
-        _ => unreachable!(),
-    };
-    let mut current = first;
-    let mut limit = if period == "monthly" { 36 } else { 156 };
-    while current < cutoff && limit > 0 {
-        let end = next_period_start(period, current)?;
-        queue_report(state, project, period, current, end, false)?;
-        current = end;
-        limit -= 1;
+        let end = next_period_start(period, start)?;
+        queue_report(state, known_keys, project, period, start, end, false)?;
     }
     Ok(())
 }
 
 pub fn check_reports(path: &Path) -> Result<()> {
     mutate_state(path, |state| {
+        let previous_count = state.reports.len();
+        let mut known_keys = state
+            .reports
+            .iter()
+            .map(|report| report.key.clone())
+            .collect();
+        let now = now_ms();
         let projects = state.projects.clone();
         for project in projects {
             if project.export_weekly {
-                queue_missing_periods(state, &project, "weekly")?;
+                queue_missing_periods(state, &mut known_keys, &project, "weekly", now)?;
             }
             if project.export_monthly {
-                queue_missing_periods(state, &project, "monthly")?;
+                queue_missing_periods(state, &mut known_keys, &project, "monthly", now)?;
             }
         }
-        Ok(())
+        Ok(if state.reports.len() == previous_count {
+            Mutation::Unchanged(())
+        } else {
+            Mutation::Changed(())
+        })
     })?;
     process_pending_reports(path)
 }
@@ -1340,6 +1538,12 @@ pub fn check_reports(path: &Path) -> Result<()> {
 pub fn export_report(path: &Path, period: &str) -> Result<()> {
     let bounds = last_completed_period(period, now_ms())?;
     mutate_state(path, |state| {
+        let previous_count = state.reports.len();
+        let mut known_keys = state
+            .reports
+            .iter()
+            .map(|report| report.key.clone())
+            .collect();
         let project = state
             .projects
             .iter()
@@ -1348,33 +1552,64 @@ pub fn export_report(path: &Path, period: &str) -> Result<()> {
             .context("active project does not exist")?;
         queue_report(
             state,
+            &mut known_keys,
             &project,
             period,
             bounds.start_at,
             bounds.end_at,
             true,
         )?;
-        Ok(())
+        Ok(if state.reports.len() == previous_count {
+            Mutation::Unchanged(())
+        } else {
+            Mutation::Changed(())
+        })
     })?;
     process_pending_reports(path)
 }
 
 pub fn retry_reports(path: &Path) -> Result<()> {
+    // Never reset a report being processed by another panel or systemd worker.
+    let Some(_worker) = report_worker_lock(path)? else {
+        return Ok(());
+    };
     mutate_state(path, |state| {
+        let mut changed = false;
         for report in &mut state.reports {
             if ["failed", "rendering", "uploading"].contains(&report.status.as_str()) {
+                changed = true;
                 report.status = "pending".to_owned();
                 if report.last_error.is_empty() {
                     report.last_error = "Recovered after an interrupted export".to_owned();
                 }
             }
         }
-        Ok(())
+        Ok(if changed {
+            Mutation::Changed(())
+        } else {
+            Mutation::Unchanged(())
+        })
     })?;
-    process_pending_reports(path)
+    process_pending_reports_locked(path)
+}
+
+fn report_worker_lock(path: &Path) -> Result<Option<File>> {
+    let lock = open_lock_file(&PathBuf::from(format!("{}.reports", path.display())))?;
+    match lock.try_lock_exclusive() {
+        Ok(()) => Ok(Some(lock)),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        Err(error) => Err(error).context("could not lock report worker"),
+    }
 }
 
 fn process_pending_reports(path: &Path) -> Result<()> {
+    let Some(_worker) = report_worker_lock(path)? else {
+        return Ok(());
+    };
+    process_pending_reports_locked(path)
+}
+
+fn process_pending_reports_locked(path: &Path) -> Result<()> {
     loop {
         let next = mutate_state(path, |state| {
             let Some(index) = state
@@ -1382,20 +1617,28 @@ fn process_pending_reports(path: &Path) -> Result<()> {
                 .iter()
                 .position(|report| report.status == "pending")
             else {
-                return Ok(None);
+                return Ok(Mutation::Unchanged(None));
             };
             let report = &mut state.reports[index];
             report.status = "rendering".to_owned();
             report.attempts += 1;
             report.last_error.clear();
-            Ok(Some((report.clone(), state.drive.clone())))
+            Ok(Mutation::Changed(Some((
+                report.clone(),
+                state.drive.clone(),
+            ))))
         })?;
         let Some((report, drive)) = next else {
             return Ok(());
         };
 
-        if let Err(error) = render_report(&report) {
-            mark_report_failure(path, &report.key, &format!("Typst failed: {error:#}"))?;
+        if let Err(error) = ensure_rendered(&report) {
+            mark_report_failure(
+                path,
+                &report.key,
+                &format!("Typst failed: {error:#}"),
+                false,
+            )?;
             continue;
         }
         if let Err(error) = upload_report(path, &report, &drive) {
@@ -1403,6 +1646,7 @@ fn process_pending_reports(path: &Path) -> Result<()> {
                 path,
                 &report.key,
                 &format!("rclone upload failed: {error:#}"),
+                true,
             )?;
             continue;
         }
@@ -1415,12 +1659,12 @@ fn process_pending_reports(path: &Path) -> Result<()> {
             report.status = "complete".to_owned();
             report.completed_at = now_ms();
             report.last_error.clear();
-            Ok(())
+            Ok(Mutation::Changed(()))
         })?;
     }
 }
 
-fn mark_report_failure(path: &Path, key: &str, error: &str) -> Result<()> {
+fn mark_report_failure(path: &Path, key: &str, error: &str, rendered: bool) -> Result<()> {
     mutate_state(path, |state| {
         let report = state
             .reports
@@ -1429,8 +1673,16 @@ fn mark_report_failure(path: &Path, key: &str, error: &str) -> Result<()> {
             .with_context(|| format!("report {key} no longer exists"))?;
         report.status = "failed".to_owned();
         report.last_error = sanitize_text(error, 500);
-        Ok(())
+        report.rendered = rendered;
+        Ok(Mutation::Changed(()))
     })
+}
+
+fn ensure_rendered(report: &Report) -> Result<()> {
+    if report.rendered && Path::new(&report.pdf_path).is_file() {
+        return Ok(());
+    }
+    render_report(report)
 }
 
 fn render_report(report: &Report) -> Result<()> {
@@ -1491,7 +1743,8 @@ fn upload_report(path: &Path, report: &Report, drive: &Drive) -> Result<()> {
             .context("queued report no longer exists")?;
         queued.status = "uploading".to_owned();
         queued.remote_path = destination.clone();
-        Ok(())
+        queued.rendered = true;
+        Ok(Mutation::Changed(()))
     })?;
     run_command(
         "rclone",
@@ -1509,10 +1762,11 @@ fn upload_report(path: &Path, report: &Report, drive: &Drive) -> Result<()> {
 }
 
 pub fn sync_state(path: &Path) -> Result<()> {
-    let drive = mutate_state(path, |state| {
+    let (drive, snapshot) = mutate_state(path, |state| {
         state.sync.status = "Syncing local state to Drive".to_owned();
         state.sync.error.clear();
-        Ok(state.drive.clone())
+        let snapshot = serde_json::to_vec(state).context("could not serialize sync snapshot")?;
+        Ok(Mutation::Changed((state.drive.clone(), snapshot)))
     })?;
     let result = (|| {
         if !command_available("rclone") {
@@ -1521,6 +1775,12 @@ pub fn sync_state(path: &Path) -> Result<()> {
         if !valid_remote(&drive.remote) {
             bail!("configure a valid rclone remote first")
         }
+        // Foreground task commands can replace the live ledger during an upload.
+        // Give rclone a stable source without holding the ledger lock over I/O.
+        let mut snapshot_file = NamedTempFile::new().context("could not create sync snapshot")?;
+        snapshot_file
+            .write_all(&snapshot)
+            .context("could not write sync snapshot")?;
         run_command(
             "rclone",
             [
@@ -1530,7 +1790,7 @@ pub fn sync_state(path: &Path) -> Result<()> {
                 "3".to_owned(),
                 "--low-level-retries".to_owned(),
                 "3".to_owned(),
-                path.display().to_string(),
+                snapshot_file.path().display().to_string(),
                 remote_path(&drive, "state.json")?,
             ],
         )
@@ -1538,7 +1798,7 @@ pub fn sync_state(path: &Path) -> Result<()> {
     mutate_state(path, |state| {
         match &result {
             Ok(()) => {
-                state.sync.status = "Local state is synced to Drive".to_owned();
+                state.sync.status = "Local snapshot synced to Drive".to_owned();
                 state.sync.error.clear();
                 state.sync.last_synced_at = now_ms();
             }
@@ -1547,7 +1807,7 @@ pub fn sync_state(path: &Path) -> Result<()> {
                 state.sync.error = sanitize_text(format!("rclone sync failed: {error:#}"), 500);
             }
         }
-        Ok(())
+        Ok(Mutation::Changed(()))
     })?;
     result
 }
@@ -1625,11 +1885,29 @@ fn systemd_argument(value: &Path) -> String {
     )
 }
 
-fn report_timer_enabled() -> bool {
-    Command::new("systemctl")
+fn report_timer_state(path: &Path) -> (bool, bool) {
+    // The installed user timer serves one ledger. A panel using another ledger
+    // must retain its own scheduler, as must a panel whose timer was stopped.
+    let service = systemd_user_unit_dir().ok().and_then(|directory| {
+        fs::read_to_string(directory.join("omatracker-report-check.service")).ok()
+    });
+    let suffix = format!(" --data-path {} report check", systemd_argument(path));
+    if !service.is_some_and(|service| {
+        service
+            .lines()
+            .any(|line| line.starts_with("ExecStart=") && line.ends_with(&suffix))
+    }) {
+        return (false, false);
+    }
+    let enabled = Command::new("systemctl")
         .args(["--user", "is-enabled", "omatracker-report-check.timer"])
         .output()
-        .is_ok_and(|output| output.status.success())
+        .is_ok_and(|output| output.status.success());
+    let active = Command::new("systemctl")
+        .args(["--user", "is-active", "omatracker-report-check.timer"])
+        .output()
+        .is_ok_and(|output| output.status.success());
+    (enabled, active)
 }
 
 fn template_path(template_id: &str) -> Result<PathBuf> {
@@ -1911,5 +2189,171 @@ mod tests {
         assert_eq!(state.entries.len(), 1);
         assert_eq!(state.entries[0].seconds, 900);
         assert_eq!(state.entries[0].note, "Manual entry");
+    }
+
+    #[test]
+    fn aggregated_totals_preserve_resets_running_time_and_legacy_seconds() {
+        let mut state = State::default();
+        state.tasks = vec![
+            Task {
+                id: "reset".into(),
+                project_id: DEFAULT_PROJECT_ID.into(),
+                legacy_seconds: 999,
+                display_since: 2500,
+                running: true,
+                started_at: 6000,
+                ..Task::default()
+            },
+            Task {
+                id: "legacy".into(),
+                project_id: "other".into(),
+                legacy_seconds: 40,
+                ..Task::default()
+            },
+        ];
+        state.entries = vec![
+            Entry {
+                task_id: "reset".into(),
+                started_at: 1000,
+                ended_at: 5900,
+                seconds: 4,
+                ..Entry::default()
+            },
+            Entry {
+                task_id: "legacy".into(),
+                started_at: 1000,
+                ended_at: 3000,
+                seconds: 2,
+                ..Entry::default()
+            },
+            Entry {
+                task_id: "deleted".into(),
+                started_at: 1000,
+                ended_at: 91000,
+                seconds: 90,
+                ..Entry::default()
+            },
+        ];
+        let presentation = build_presentation_status(&state, 9500);
+        assert_eq!(presentation.active_tasks[0].display_seconds, 6);
+        assert_eq!(presentation.active_project_seconds, 6);
+        assert_eq!(presentation.total_tracked_seconds, 48);
+        assert_eq!(presentation.running_timers, 1);
+        assert_eq!(task_totals(&state, 9500), vec![6, 42]);
+        for (task, total) in state.tasks.iter().zip(task_totals(&state, 9500)) {
+            assert_eq!(total, task_seconds(&state, task, 9500));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn no_op_commands_do_not_replace_the_ledger() {
+        use std::os::unix::fs::MetadataExt;
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("state.json");
+        let task_id = add_task(&path, Some("Design")).unwrap();
+        // Keeping the original file open also prevents inode reuse masking a write.
+        let original = File::open(&path).unwrap();
+        let contents = fs::read(&path).unwrap();
+        stop_task(&path, &task_id).unwrap();
+        select_project(&path, DEFAULT_PROJECT_ID).unwrap();
+        edit_task(&path, &task_id, Some("Design"), None).unwrap();
+        update_drive(&path, "", "OmaTracker", false).unwrap();
+        check_reports(&path).unwrap();
+        retry_reports(&path).unwrap();
+        assert_eq!(
+            original.metadata().unwrap().ino(),
+            fs::metadata(&path).unwrap().ino()
+        );
+        assert_eq!(contents, fs::read(&path).unwrap());
+
+        start_task(&path, &task_id).unwrap();
+        let running = File::open(&path).unwrap();
+        start_task(&path, &task_id).unwrap();
+        assert_eq!(
+            running.metadata().unwrap().ino(),
+            fs::metadata(&path).unwrap().ino()
+        );
+    }
+
+    fn date(year: i32, month: u32, day: u32) -> i64 {
+        local_midnight(NaiveDate::from_ymd_opt(year, month, day).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn report_periods_cover_long_histories_and_late_entries_without_empty_gaps() {
+        let mut state = State::default();
+        for start in [date(2020, 1, 10), date(2026, 8, 10)] {
+            state.entries.push(Entry {
+                project_id: DEFAULT_PROJECT_ID.into(),
+                started_at: start,
+                ended_at: start + 60000,
+                seconds: 60,
+                ..Entry::default()
+            });
+        }
+        let now = date(2026, 9, 18);
+        assert_eq!(
+            occupied_periods(&state, DEFAULT_PROJECT_ID, "weekly", now).unwrap(),
+            BTreeSet::from([date(2020, 1, 6), date(2026, 8, 10)])
+        );
+        assert_eq!(
+            occupied_periods(&state, DEFAULT_PROJECT_ID, "monthly", now).unwrap(),
+            BTreeSet::from([date(2020, 1, 1), date(2026, 8, 1)])
+        );
+
+        let start = date(2023, 2, 2);
+        state.entries.push(Entry {
+            project_id: DEFAULT_PROJECT_ID.into(),
+            started_at: start,
+            ended_at: start + 60000,
+            seconds: 60,
+            ..Entry::default()
+        });
+        assert_eq!(
+            occupied_periods(&state, DEFAULT_PROJECT_ID, "monthly", now).unwrap(),
+            BTreeSet::from([date(2020, 1, 1), date(2023, 2, 1), date(2026, 8, 1)])
+        );
+    }
+
+    #[test]
+    fn report_periods_handle_month_end_and_running_sessions() {
+        let mut state = State::default();
+        state.entries.push(Entry {
+            project_id: DEFAULT_PROJECT_ID.into(),
+            started_at: date(2024, 1, 31),
+            ended_at: date(2024, 2, 2),
+            seconds: 172800,
+            ..Entry::default()
+        });
+        state.tasks.push(Task {
+            project_id: DEFAULT_PROJECT_ID.into(),
+            running: true,
+            started_at: date(2024, 3, 1),
+            ..Task::default()
+        });
+        assert_eq!(
+            occupied_periods(&state, DEFAULT_PROJECT_ID, "monthly", date(2024, 4, 15)).unwrap(),
+            BTreeSet::from([date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)])
+        );
+    }
+
+    #[test]
+    fn retry_does_not_reset_an_active_workers_report() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("state.json");
+        let mut state = State::default();
+        state.reports.push(Report {
+            key: "in-flight".into(),
+            project_id: DEFAULT_PROJECT_ID.into(),
+            start_at: 1000,
+            end_at: 2000,
+            status: "uploading".into(),
+            ..Report::default()
+        });
+        write_state(&path, &state).unwrap();
+        let _worker = report_worker_lock(&path).unwrap().unwrap();
+        retry_reports(&path).unwrap();
+        assert_eq!(read_state(&path).unwrap().reports[0].status, "uploading");
     }
 }
