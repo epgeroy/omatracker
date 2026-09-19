@@ -313,7 +313,7 @@ Panel {
 
   Service {
     id: trackerClient
-    Component.onCompleted: trackerClient.configure(root.dataFilePath)
+    dataPath: root.dataFilePath
   }
 
   IpcHandler {

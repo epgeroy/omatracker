@@ -290,6 +290,8 @@ Item {
     enqueue("report-timer", ["service", enabled === true ? "install" : "remove"], {})
   }
 
+  Component.onCompleted: root.configure(root.dataPath)
+
   Process {
     id: commandProcess
 
