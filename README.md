@@ -52,13 +52,14 @@ needed:
 
 ```sh
 bin/omatracker agent help
-bin/omatracker agent doctor
-bin/omatracker agent context
-bin/omatracker agent migration.preview
+# Enumerate projects only when an authoritative target ID is not already known:
+bin/omatracker agent project.list
 ```
 
-See [Agent API](AGENT_API.md) for project/client setup, historical rates, dated
-entries and reversible corrections, invoice issuance, and Drive operations.
+Start with [task/time requests](AGENT_API.md#quick-start-task-and-time) or the
+[API quick index](AGENT_API.md#quick-index) for historical time, invoices, templates,
+and administration. Use `context` when timers/draft summaries are needed instead
+of routinely fetching both it and `project.list`.
 Install [the OmaTracker skill](skills/omatracker/SKILL.md) globally for your harness:
 
 ```sh

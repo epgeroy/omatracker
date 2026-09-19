@@ -2,6 +2,101 @@
 
 OmaTracker's agent interface is a local, noninteractive CLI. It needs no MCP server.
 
+## Quick index
+
+| Intent | Read |
+| --- | --- |
+| Create/start a task | [Quick start and targeting](#quick-start-task-and-time), [task fields](#time-and-corrections) |
+| Add historical time | [Dated work and billing checks](#add-dated-work), [entry fields](#time-and-corrections) |
+| Discover/edit entities | [Discovery rules](#discovery-rules), [projects](#discovery-setup-and-projects), [rename/delete](#renaming-and-deleting-entities) |
+| Prepare, issue, render, upload | [Invoices](#invoices) |
+| Customize/show a template | [Templates and Drive](#templates-and-drive), [invoice template contract](TEMPLATES.md#invoice-contract-version-1) |
+| Install/remove | [Skill installation](#global-skill-installation), [skill removal](#global-skill-removal) |
+| Reset/migrate | [Clear-all](#clear-all-and-the-protected-workspace), [migration and storage](#migration-and-storage) |
+
+## Quick start: task and time
+
+For an installed skill, read its `references/installation.md` once per
+session/installation context for the exact executable. Use that absolute path
+in place of `bin/omatracker` below; resolve documentation relative to the document,
+not the working directory. Recheck the installation reference after a reinstall
+or executable move. No `agent help` call is required for these documented requests.
+
+### Discovery rules
+
+- Reuse an explicit project ID already returned by an authoritative command.
+- Otherwise choose **one** initial read: `repository.resolve` with an existing
+  repository path for a binding, `project.list` for enumeration, or `context` if
+  running timers/draft summaries are needed. Do not automatically fetch both
+  `context` and `project.list`.
+- Lists return `data.items`, `data.total`, and `data.nextOffset`. Follow `nextOffset`
+  with the same filters; a partial page does not establish absence. Project/client
+  lists hide archives unless `includeArchived: true`. Resolve ambiguous names with
+  the user. `context` includes active projects, not archived projects or entity tokens.
+- Fetch additional fields only when needed: `project.get` returns `data.billing`
+  (timezone, client ID, rate history); get/list responses provide `entityRevision`
+  for entity edits. Refresh metadata after a conflict or meaningful intervening
+  change, rather than before every operation.
+- Prepare independent reads and retry keys together. Order writes that depend on
+  returned IDs. Use explicit project/task IDs; panel selection is never a target.
+
+### Create a task and start tracking
+
+Generate and retain two distinct keys with `agent request.key` (each returns
+`data.key`). These reads and project discovery are independent and may run together:
+
+```sh
+bin/omatracker agent project.list --input '{"limit":50}'
+bin/omatracker agent request.key
+bin/omatracker agent request.key
+```
+
+If the target project ID is already known, skip discovery. Replace `PROJECT_ID`,
+`CREATE_KEY`, and `START_KEY` with the returned values. Run the writes in order:
+
+```sh
+bin/omatracker agent task.create --input '{"project":"PROJECT_ID","title":"demo"}' --key CREATE_KEY
+# Use data.id from the successful creation response as TASK_ID:
+bin/omatracker agent task.start --input '{"id":"TASK_ID"}' --key START_KEY
+```
+
+Check `ok` on each response and `data.running: true` on start. No `task.list` or
+revision lookup is needed for a new task. Retain the exact inputs and resolved
+keys; retry a lost response with the same key, never another creation.
+Full [task fields](#time-and-corrections) and [retry conventions](#agent-requests)
+are below. This scenario needs only the installation lookup and this section.
+
+### Add dated work
+
+Resolve “yesterday” in the project's timezone. If it is not already known, read
+`project.get` for `data.billing.timezone`; identify the task with a scoped
+`task.list` only if its ID is unknown. Ask for a missing/ambiguous task or start
+time rather than inventing a date, timezone offset, or interval.
+
+For an agreed three-hour interval beginning at 09:00 UTC on 2026-09-18:
+
+```sh
+bin/omatracker agent request.key
+# Replace ENTRY_KEY with data.key and TASK_ID with the authoritative task ID:
+bin/omatracker agent entry.add --input '{"id":"TASK_ID","start":"2026-09-18T09:00:00+00:00","seconds":10800,"note":"Yesterday’s work"}' --key ENTRY_KEY
+```
+
+Replace the example date/offset with the user's actual interval. The end must be
+no later than now. `entry.add` records completed work; it does not start a timer.
+Use [entry fields](#time-and-corrections) for end timestamps and corrections.
+
+Check every item in `data.entries`: `entry` holds the recorded segment and
+`billing` its captured historical pricing. A rate boundary can split one request
+into several entries. Missing rate is non-billable; zero is a billable rate.
+Today's rate does not prove yesterday was priced. Report recorded duration and
+actual billing status; investigate unexpected exclusions before invoicing.
+If an amount is needed, use `summary` for the project/date range (exclusive `to`)
+and report its per-currency totals and exclusions rather than computing money.
+Pricing existing unrated work requires explicit intent; see
+[task-rate adjustments](#assign-a-rate-to-an-existing-task).
+
+## Conventions
+
 ```sh
 bin/omatracker --data-path /absolute/path/ledger.json agent help
 bin/omatracker agent ACTION --input '{"field":"value"}' --key unique-request-id
@@ -15,8 +110,6 @@ use `ok: false`, `error.code`, and `error.message`, with a nonzero exit status.
 Unknown request fields are rejected. Normal clap usage errors use stderr/exit 2.
 The existing panel CLI retains its output formats for compatibility; agents should
 use the versioned `agent` interface.
-
-## Conventions
 
 ### Bulk dated work: `work.record-batch`
 
@@ -271,82 +364,6 @@ key; it owns durable planning, dependent IDs, receipts and the final summary.
 and recipe are in this document and `references/workflows.md`.
 
 ## Operations
-
-### Clear-all and the protected workspace
-
-`Unassigned` has the fixed ID `project-unassigned`. It is the internal destination
-for unassigned tasks and the fallback when an active project is removed. The state
-model recreates it if missing. **Protected is an application invariant, not an
-authorization or filesystem permission.** Project list/get results label it with
-`protected: true`. Renaming it does not change its reserved identity.
-
-Normal `.remove` operations preserve history. For a deliberate fresh start, the
-CLI has a separate operation:
-
-```sh
-omatracker data clear --dry-run
-omatracker data clear --include-drive --dry-run --json
-```
-
-Execute only when a full reset is intended:
-
-```sh
-omatracker data clear
-```
-
-To include Drive, use this **instead of** the local-only command, before removing
-the metadata that identifies uploaded files:
-
-```sh
-omatracker data clear --include-drive
-```
-
-The agent equivalent is `agent data.clear --input '{"dryRun":true,"includeDrive":true}'`.
-Without `dryRun`, it executes. This operation does not accept retry keys: inspect
-the backup/progress after an interruption before starting another clear, particularly
-if new work has been recorded since. Tests use disposable ledgers/fake remotes;
-running the examples against your actual ledger is a user action, not a required
-installation step.
-
-The operation clears all user projects and clients (including archives), tasks,
-time entries, corrections, task rates, invoice/report records, repository bindings
-and request receipts. It resets Unassigned to an empty default. Its result reports
-`remaining.userProjects: 0` and a separate `systemWorkspace`; a raw project list
-still contains that internal workspace. Issuer details, invoice-number sequences,
-Drive settings, reusable templates/images and local UI/audio preferences survive.
-Number sequences are retained to avoid reusing already-issued invoice numbers.
-
-Before deletion it backs up the raw ledger, feedback checkpoint and generated
-files under `<ledger>.backups/clear-<id>/`. `manifest.json` records the plan,
-original local paths, remote targets and incremental completion status. Local
-invoice storage `<ledger>.invoices/` is cleared, including orphaned captured
-bundles and invoice previews. Tracked report artifacts are removed only within the
-report cache with matching generated filenames. Unrelated caches, anonymous
-legacy previews and previous backups are not swept. A backup intentionally retains
-the old data for recovery; remove that backup separately when you no longer need it.
-
-`--include-drive` requires a configured rclone remote. It inventories exact recorded
-report destinations and recorded/derivable invoice destinations, including known orphaned invoice snapshots,
-and the current `state.json`. Legacy reports without a recorded upload destination
-are not guessed by project name, which could collide with another ledger.
-The remote ledger must share identifiers with this
-ledger or match its contents/configuration (apart from sync bookkeeping). Unknown,
-moved or renamed remote files are not guessed. Unrelated documents and setup-test
-files are not included; no remote directories are deleted.
-
-All remote targets are downloaded to the local backup **before any remote deletion**.
-Their metadata is checked again, then `rclone deletefile` removes each exact file
-and its absence is verified. Rclone's configured deletion behavior applies (Google
-Drive normally moves deleted files to Trash). A remote failure leaves the local
-records intact; already-completed remote deletions and backups are recorded for
-recovery/retry. After remote success, the local ledger is reset and generated
-local files are removed. A later local cleanup failure is reported with the backup
-path and completion journal rather than being presented as a complete success.
-
-The command waits for upload/render workers and holds the ledger lock to prevent
-new writes during the reset. A cloud dry-run makes read-only remote requests but
-creates no data backups or deletions. Lock files may be created. The widget retries
-status polling after temporary lock timeouts and picks up the resulting empty state.
 
 Fields below are inside the `--input` object. Optional fields are in parentheses.
 `details` replaces a complete party profile; read it before updating it.
@@ -648,6 +665,168 @@ Run `rclone config` for OAuth setup; the user completes browser authentication.
 OmaTracker stores the remote name, not OAuth credentials. `drive.test` leaves its
 test file in `setup-tests/`. Invoice uploads return the remote destination; they
 do not invent public Google Drive links or change sharing permissions.
+
+## Administration
+
+### Global skill installation
+
+Install the CLI from its repository with `make install` first (or `make install-bin`
+for a prebuilt release). This puts the `omatracker` command in `~/.local/bin` and
+an independent binary/template bundle in `${XDG_DATA_HOME:-~/.local/share}/omatracker`.
+Ensure `~/.local/bin` is on `PATH`. Then the following commands work from any directory:
+
+```sh
+omatracker skill install --harness opencode
+omatracker skill install --harness claude,codex
+omatracker skill install --harness gemini,cursor --dry-run
+omatracker skill targets --json
+```
+
+When the widget is installed, use `make install-plugin` from the same checkout and
+`omarchy restart shell` to load matching runtime files (a rescan can retain cached
+QML components). This pins the
+widget's backend to the standalone installation, so subsequent CLI updates also
+update its backend. `omarchy-shell omatracker status` reports the widget's actual
+ledger/backend paths and cached entity IDs; `omarchy-shell omatracker refresh`
+requests an immediate refresh. Normal polling picks up external CLI edits within
+five seconds. An old 0.4 backend must not write a version 3 or newer ledger: it drops billing
+and archive metadata it doesn't understand.
+
+The installer is user-global and needs no sudo. It does not open or migrate a ledger.
+Harness names may be comma-separated or passed in repeated `--harness` options.
+
+| Harness | Global skill directory |
+| --- | --- |
+| `shared` (default), `codex` | `~/.agents/skills/omatracker` |
+| `opencode` | `${XDG_CONFIG_HOME:-~/.config}/opencode/skills/omatracker` |
+| `claude` (alias `claude-code`) | `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/omatracker` |
+| `gemini` (alias `gemini-cli`) | `~/.gemini/skills/omatracker` |
+| `cursor` | `~/.cursor/skills/omatracker` |
+
+Codex uses the shared directory, so selecting both deduplicates the destination.
+OpenCode, Gemini CLI and Cursor also discover shared skills; prefer the shared
+installation for those harnesses together rather than creating duplicate copies.
+Claude Code has its own personal skill directory. Environment overrides must be
+absolute paths. These are local-machine installations, not cloud provisioning.
+
+The binary embeds the matching skill and reference docs and records its absolute
+path in `references/installation.md`. Reinstall after moving the executable or
+upgrading OmaTracker. Unmodified managed installations update automatically;
+identical installations are a no-op. Existing/modified content is preserved unless
+`--force` is supplied. Replacements and updates keep the old directory under
+`<harness-config>/omatracker-skill-backups/`, outside the scanned `skills/` tree.
+Symlink destinations must be moved aside explicitly. Multi-harness requests
+preflight all conflicts; publication is per destination, not an all-target transaction.
+
+`--dry-run` creates no files or directories. `--json` returns destinations, planned
+or performed actions, and any backup paths. Quit and restart OpenCode after
+installation. Restart/reload skills in other harnesses to discover the skill.
+
+### Global skill removal
+
+```sh
+omatracker skill remove --harness opencode
+omatracker skill remove --harness claude,codex --dry-run
+omatracker skill uninstall --harness gemini --json
+```
+
+`remove` and its alias `uninstall` accept the same harness names, repeated or
+comma-separated, and default to `shared`. Codex and shared select the same directory;
+removing it affects all harnesses loading that shared skill. Removal is scoped to
+the selected directories; other copies may remain discoverable through a harness's
+compatibility paths.
+
+Unmodified managed installations are deleted. Their contents are checked against
+their own installation manifest, so a CLI update does not make an older skill
+look modified. Modified/unmanaged installations require `--force`; their directory
+is then moved to `omatracker-skill-backups/` outside skill discovery rather than
+discarding customizations. Symlink destinations must be moved aside explicitly.
+Previous backups, unrelated skills, the tracker binary, templates, and ledger remain.
+
+Absent installations are successful no-ops. `--dry-run` writes nothing, including
+when the harness directories don't exist. `--json` returns a `removals` array with
+the harnesses, path, action, and optional backup path. Actions are `remove` or
+`remove-with-backup` for planned removal, `removed` after removal, or `absent`.
+All targets are preflighted before changes; each target shares the installation lock
+and is rechecked before removal. As with install, this is not an all-target transaction.
+Quit and restart OpenCode after removal; restart/reload skills in other harnesses.
+
+### Clear-all and the protected workspace
+
+`Unassigned` has the fixed ID `project-unassigned`. It is the internal destination
+for unassigned tasks and the fallback when an active project is removed. The state
+model recreates it if missing. **Protected is an application invariant, not an
+authorization or filesystem permission.** Project list/get results label it with
+`protected: true`. Renaming it does not change its reserved identity.
+
+Normal `.remove` operations preserve history. For a deliberate fresh start, the
+CLI has a separate operation:
+
+```sh
+omatracker data clear --dry-run
+omatracker data clear --include-drive --dry-run --json
+```
+
+Execute only when a full reset is intended. If the user asks for a command or an
+explanation, provide it without executing it on their data:
+
+```sh
+omatracker data clear
+```
+
+To include Drive, use this **instead of** the local-only command, before removing
+the metadata that identifies uploaded files, and only when explicitly requested:
+
+```sh
+omatracker data clear --include-drive
+```
+
+The agent equivalent is `agent data.clear --input '{"dryRun":true,"includeDrive":true}'`.
+Without `dryRun`, it executes. This operation does not accept retry keys: inspect
+the backup/progress after an interruption before starting another clear, particularly
+if new work has been recorded since. Tests use disposable ledgers/fake remotes;
+running the examples against your actual ledger is a user action, not a required
+installation step.
+
+The operation clears all user projects and clients (including archives), tasks,
+time entries, corrections, task rates, invoice/report records, repository bindings
+and request receipts. It resets Unassigned to an empty default. Its result reports
+`remaining.userProjects: 0` and a separate `systemWorkspace`; a raw project list
+still contains that internal workspace. Issuer details, invoice-number sequences,
+Drive settings, reusable templates/images and local UI/audio preferences survive.
+Number sequences are retained to avoid reusing already-issued invoice numbers.
+
+Before deletion it backs up the raw ledger, feedback checkpoint and generated
+files under `<ledger>.backups/clear-<id>/`. `manifest.json` records the plan,
+original local paths, remote targets and incremental completion status. Local
+invoice storage `<ledger>.invoices/` is cleared, including orphaned captured
+bundles and invoice previews. Tracked report artifacts are removed only within the
+report cache with matching generated filenames. Unrelated caches, anonymous
+legacy previews and previous backups are not swept. A backup intentionally retains
+the old data for recovery; remove that backup separately when you no longer need it.
+
+`--include-drive` requires a configured rclone remote. It inventories exact recorded
+report destinations and recorded/derivable invoice destinations, including known orphaned invoice snapshots,
+and the current `state.json`. Legacy reports without a recorded upload destination
+are not guessed by project name, which could collide with another ledger.
+The remote ledger must share identifiers with this
+ledger or match its contents/configuration (apart from sync bookkeeping). Unknown,
+moved or renamed remote files are not guessed. Unrelated documents and setup-test
+files are not included; no remote directories are deleted.
+
+All remote targets are downloaded to the local backup **before any remote deletion**.
+Their metadata is checked again, then `rclone deletefile` removes each exact file
+and its absence is verified. Rclone's configured deletion behavior applies (Google
+Drive normally moves deleted files to Trash). A remote failure leaves the local
+records intact; already-completed remote deletions and backups are recorded for
+recovery/retry. After remote success, the local ledger is reset and generated
+local files are removed. A later local cleanup failure is reported with the backup
+path and completion journal rather than being presented as a complete success.
+
+The command waits for upload/render workers and holds the ledger lock to prevent
+new writes during the reset. A cloud dry-run makes read-only remote requests but
+creates no data backups or deletions. Lock files may be created. The widget retries
+status polling after temporary lock timeouts and picks up the resulting empty state.
 
 ### Migration and storage
 

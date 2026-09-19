@@ -4,8 +4,14 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from doc_links import check_links
 
 root = Path(__file__).resolve().parents[1]
+source_docs = [root / path for path in [
+    "README.md", "AGENT_API.md", "TEMPLATES.md", "skills/omatracker/SKILL.md",
+    "skills/omatracker/references/workflows.md", "tests/manual-invoices.md",
+]]
+source_links = check_links(source_docs, root)
 with tempfile.TemporaryDirectory(prefix="omatracker-install-") as temporary:
     work = Path(temporary)
     bindir = work / "local bin"
@@ -34,6 +40,8 @@ with tempfile.TemporaryDirectory(prefix="omatracker-install-") as temporary:
     assert "work.record-batch" in (skill / "AGENT_API.md").read_text()
     assert "work.record-batch" in (skill / "references" / "workflows.md").read_text()
     assert "work.record-batch" in json.loads(cli("agent", "help"))["data"]["actions"]
+    installed_links = check_links(list(skill.rglob("*.md")), skill)
+    print(f"Validated {source_links} source and {installed_links} installed documentation links")
     assert not (work / "ledger.json").exists()
     assert not (work / "ledger.json.lock").exists()
 

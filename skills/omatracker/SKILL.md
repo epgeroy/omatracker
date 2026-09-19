@@ -5,9 +5,11 @@ description: Create, rename, and delete OmaTracker tasks, projects and clients; 
 
 # OmaTracker
 
-Use the installed plugin's `bin/omatracker`, or this repository's `bin/omatracker`.
-Do not assume a binary with the same name on PATH is the intended installation.
-Respect a user-specified ledger using `--data-path`. No MCP server is required.
+Use the exact executable for this installation; do not substitute a same-named
+program on PATH. In a source checkout, use its absolute `bin/omatracker` path.
+Respect a user-specified ledger with `--data-path`. No MCP server is required.
+
+## Load by intent
 
 1. Run `agent help`; read `AGENT_API.md` from this installation for request fields.
 2. Use `agent context` and `project.list` to discover projects. Prefer an explicit
@@ -28,7 +30,8 @@ Respect a user-specified ledger using `--data-path`. No MCP server is required.
 5. Keep outputs focused: query a project/date range, request summaries, and follow
    pagination. Rust calculates amounts; do not recompute money in the model.
 
-## Workflows
+Read only the linked section needed for the request. The API is the authoritative
+field contract; `agent help` lists actions when needed, not a mandatory first call.
 
 - **Setup:** `doctor`; help install missing Typst/rclone; guide `rclone config`
   browser authentication; `drive.configure`, `drive.check`. Use `drive.test` when
@@ -113,14 +116,44 @@ the path; do not claim the PDF opened. Do not use retry keys for viewer launches
 
 ## Accounting rules
 
-A rate makes work billable, including zero. No rate makes it non-billable. Recorded
-time retains its historical rate; backdated entries use effective-dated history.
-Explicit `task.rate` with `applyExisting` can price previously unrated, uninvoiced
-entries; this is an opt-in adjustment with an audit record, not automatic repricing.
-Existing pre-invoice entries require an explicit migration decision. Issued
-invoices are immutable; void, correct, and prepare a linked replacement when asked.
-Automatic monthly checks generate drafts only. `to` dates are exclusive and use
-the project timezone. Different currencies remain separate invoices.
+| User intent | Load first |
+| --- | --- |
+| Create/start a task | [Task/time quick start](../../AGENT_API.md#quick-start-task-and-time) (includes targeting and complete requests) |
+| Add historical work | [Dated-entry example and billing checks](../../AGENT_API.md#add-dated-work) |
+| Record many dated tasks | [Tracking recipe](references/workflows.md#tracking-and-corrections); use supported per-task/per-entry requests |
+| Prepare/send an invoice | [Invoice recipe](references/workflows.md#invoice-preparation) |
+| Show an existing preview | [Existing invoice preview](references/workflows.md#show-an-existing-invoice-preview) |
+| Customize a template | [Invoice template contract](../../TEMPLATES.md#invoice-contract-version-1) |
+| Set up a client/project | [Setup recipe](references/workflows.md#new-client-and-project) |
+| Rename/delete, including archives | [Entity recipe](references/workflows.md#rename-or-delete-tasks-projects-and-clients) |
+| Change a task rate | [Rate recipe](references/workflows.md#rates-on-existing-tasks) |
+| Install/remove the skill | [Installation](../../AGENT_API.md#global-skill-installation) / [removal](../../AGENT_API.md#global-skill-removal) |
+| Diagnose dependencies or migrate | [Dependencies and migration](references/workflows.md#dependencies-and-migration) |
+| Clear everything | [Reset contract](../../AGENT_API.md#clear-all-and-the-protected-workspace); execute only for an explicit full-reset request, preview first, include Drive only if requested |
 
-Read `tests/manual-invoices.md` for an isolated end-to-end exercise. Preview template
-changes and use invoice data for billing, not the panel's current-rate counter estimate.
+## Operational invariants
+
+- **Target once:** reuse authoritative project IDs already returned. Choose
+  `repository.resolve` for a repository binding, `project.list` for enumeration,
+  or `context` for timers/draft summaries. Do not routinely call both `context`
+  and `project.list`. Never change panel selection to target agent work.
+- **Complete discovery:** follow `nextOffset`; a partial page is not proof of
+  absence. Use `includeArchived: true` for project/client history. Fetch missing
+  metadata only when needed (for example, an edit's `entityRevision`). Refresh
+  after a conflict or meaningful intervening change, not before every operation.
+- **Retry identity:** generate and retain `agent request.key` before each new
+  logical write; pass `--key` and reuse only for the exact retry. Prepare independent
+  reads/keys together; keep ID-dependent writes ordered. Render/upload accept keys.
+  With interactive `--key auto`, retain the resolved key for retries, never `auto`.
+  Recreating a removed entity requires a new key and ID. Reset is not retry-keyed.
+- **Historical time:** use actual dates and project timezone, RFC3339 offsets,
+  and exclusive `to` dates. Ask for an ambiguous task/date/start time. Historical
+  entries use historical rates, not today's rate. Inspect returned billing:
+  no rate is non-billable, zero is billable. `applyExisting` is explicit opt-in.
+  Correct a specific entry with its revision and a reason; never guess a subtraction.
+- **Results:** parse `ok`, `data`, and `error.code`. Use opaque `entityRevision`
+  for entity edits and the target's numeric revision for entry/invoice edits.
+  Rust computes money; keep currencies separate. Issued invoices are immutable;
+  retry render/upload on the existing invoice. Report actual PDF/upload status.
+
+For an isolated end-to-end exercise, see [manual invoices](../../tests/manual-invoices.md).

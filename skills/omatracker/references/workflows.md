@@ -1,7 +1,30 @@
 # Workflow recipes
 
-Read `AGENT_API.md` in the OmaTracker installation for the complete field contract.
-All commands below are `bin/omatracker agent ACTION --input JSON`.
+Use the exact executable from the installation reference, read once per
+session/installation context. Resolve links relative to this file. The
+[Agent API](../../../AGENT_API.md#quick-index) is the authoritative field contract;
+load only the relevant section. Recipes below use `agent ACTION --input JSON`.
+
+## Discovery and grouped preparation
+
+Reuse authoritative IDs already known. Otherwise choose `repository.resolve` for
+a repository binding, `project.list` for enumeration, or `context` for timers and
+draft summaries. Do not routinely call both `context` and `project.list`.
+Follow `nextOffset` with the same filters; a partial page is not proof of absence.
+Use `includeArchived: true` for project/client history. Get missing metadata only
+when the request needs it, such as timezone or an entity's edit token. Refresh
+after conflicts or meaningful intervening changes, not before every operation.
+
+Group independent preparation, then execute dependent writes in order:
+
+| Request | Independent preparation | Ordered work |
+| --- | --- | --- |
+| Create/start demo | One project-discovery read if needed, two `request.key` calls | `task.create` → returned task ID → `task.start` |
+| Add dated work | With a known project, `project.get` for timezone if missing, `task.list` if task ID missing, `request.key` | Confirm actual interval → `entry.add` → inspect returned billing |
+| Invoice a range | With a known project/range, `summary`, `drive.check` if upload readiness is unknown, keys for intended writes | Draft → preview → issue → render → upload |
+
+Keep each generated key with its intended request. These groups are scheduling
+examples, not a batch API. Full requests: [task/time quick start](../../../AGENT_API.md#quick-start-task-and-time).
 
 ## Prepare keys together, execute dependencies in order
 
@@ -39,6 +62,8 @@ rounds separately from internal CLI calls: the underlying writes still run.
 
 ## New client and project
 
+Contract: [discovery/setup/projects](../../../AGENT_API.md#discovery-setup-and-projects).
+
 1. `issuer.get`; use `issuer.set` with complete `details` to record sender name,
    address, contact details, registration ID, and payment instructions.
 2. `client.list`; reuse a matching client or `client.set` with complete `details`.
@@ -52,6 +77,8 @@ rounds separately from internal CLI calls: the underlying writes still run.
 7. Optionally `repository.bind` so future sessions can discover the project.
 
 ## Rename or delete tasks, projects, and clients
+
+Contract: [entity lifecycle](../../../AGENT_API.md#renaming-and-deleting-entities).
 
 Discover the entity ID with the appropriate list/get action. Rename using
 `task.update` (`id`, `name` or `title`), `project.update` (`project`, `name`), or
@@ -76,7 +103,23 @@ old ID; use the new returned ID in new projects. If a creation key returns
 is a convenience for new operations; its stderr/JSON gives the actual retry key.
 An `IDEMPOTENCY_CONFLICT` is not fixed by altering arguments with the same key.
 
+### Rename an archived project's client
+
+1. Reuse the archived project's ID, or page `project.list` with
+   `includeArchived: true` until it is found (resolve duplicate names explicitly).
+   Active-only `context` cannot establish that it is absent.
+2. `project.get` with that ID; read `data.billing.clientId`. A missing client link
+   is not permission to rename a similarly named client.
+3. `client.get` with that client ID; retain `data.entityRevision`. Prepare a fresh
+   request key alongside this read. Inspect `archived`: an archived client cannot
+   be edited; explain that limitation and ask about a replacement if needed.
+4. For an active client, `client.update` with its ID, requested name and token.
+   This updates the linked client, not the archived project's configuration.
+   Reuse returned metadata; fetch again only on conflict or an intervening change.
+
 ## Rates on existing tasks
+
+Contract: [task rates](../../../AGENT_API.md#assign-a-rate-to-an-existing-task).
 
 Read `task.get`. Set `task.rate` with `id`, `rate`, `currency` and its
 `entityRevision`. This works independently of a project rate and defaults to new
@@ -138,6 +181,9 @@ resolved, not silently classified as non-billable. For resolved historical entri
    source pricing. Issued invoices require the void/correction/reissue workflow.
 
 ## Tracking and corrections
+
+Complete examples and contract: [task/time quick start](../../../AGENT_API.md#quick-start-task-and-time)
+and [time/correction fields](../../../AGENT_API.md#time-and-corrections).
 
 Use `task.list` and `task.create` as needed. Start/stop explicitly when requested;
 do not infer that all agent execution is human billable work. Inspect running
@@ -218,6 +264,8 @@ later changes or unexpected exclusions warrant it. Fewer model/tool round trips
 do not by themselves establish an elapsed-time speedup.
 
 ## Invoice preparation
+
+Contract: [invoice fields and lifecycle](../../../AGENT_API.md#invoices).
 
 Prepare create/issue/render/upload keys together as described above; use each only
 when its step is requested and its dependencies have been validated.
@@ -309,6 +357,10 @@ local asset path and note if the website was unverified. This sidecar is workflo
 documentation, not a freshness key; existing metadata-free templates still work.
 
 ## Dependencies and migration
+
+Load [setup actions](../../../AGENT_API.md#discovery-setup-and-projects),
+[Drive](../../../AGENT_API.md#templates-and-drive), or
+[migration](../../../AGENT_API.md#migration-and-storage) only as needed.
 
 `doctor` supplies dependency status and install hints. On Omarchy, missing tools
 can be installed with `sudo pacman -S typst rclone`. Use the user's package manager

@@ -141,23 +141,29 @@ fn bundle() -> Result<BTreeMap<String, Vec<u8>>> {
          before `agent` when the user specifies a ledger. Never substitute a similarly\n\
          named program in the current project. If this executable moves, rerun\n\
          `skill install` from its new location to refresh this installation.\n\n\
-         Read `../AGENT_API.md` for the matching request contract. The skill root also\n\
+         Read this reference once per session/installation context; use the skill's\n\
+         intent router to load only the relevant request contract. Refresh this\n\
+         lookup after reinstalling or moving the executable.\n\n\
+         Read [Agent API](../AGENT_API.md#quick-index) for the matching request contract. The skill root also\n\
          includes `TEMPLATES.md` and `tests/manual-invoices.md`; resolve documentation\n\
          paths relative to the skill root, not the agent's current working directory.\n",
         env!("CARGO_PKG_VERSION")
     );
-    let skill = include_str!("../skills/omatracker/SKILL.md").replacen(
+    // Source links are relative to skills/omatracker; installed docs live at the root.
+    let skill = include_str!("../skills/omatracker/SKILL.md").replace(
+        "](../../",
+        "](",
+    ).replacen(
         "# OmaTracker\n",
-        "# OmaTracker\n\n**Installed skill:** first read `references/installation.md` for the exact CLI\npath. All documentation paths below resolve against this skill directory.\n",
+        "# OmaTracker\n\n**Installed skill:** read [installation](references/installation.md) once per session/installation\ncontext for the exact CLI path. Resolve links relative to the containing document.\n",
         1,
     );
+    let workflows = include_str!("../skills/omatracker/references/workflows.md")
+        .replace("](../../../", "](../");
     let mut files: BTreeMap<String, Vec<u8>> = [
         ("SKILL.md", skill.as_str()),
         ("references/installation.md", installation.as_str()),
-        (
-            "references/workflows.md",
-            include_str!("../skills/omatracker/references/workflows.md"),
-        ),
+        ("references/workflows.md", workflows.as_str()),
         ("AGENT_API.md", include_str!("../AGENT_API.md")),
         ("TEMPLATES.md", include_str!("../TEMPLATES.md")),
         (
