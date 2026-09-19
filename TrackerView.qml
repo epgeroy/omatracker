@@ -46,7 +46,8 @@ Item {
     { id: "projects", title: "Switch project", hint: "p" },
     { id: "new-project", title: "Create project", hint: "" },
     { id: "project", title: "Project settings", hint: "" },
-    { id: "reports", title: "Reports and exports", hint: "" },
+    { id: "reports", title: "Invoices and exports", hint: "" },
+    { id: "entries", title: "Time entries and corrections", hint: "" },
     { id: "templates", title: "PDF templates and appearance", hint: "" },
     { id: "settings", title: "Preferences and Google Drive", hint: "," },
     { id: "running", title: "Running timers · all projects", hint: "" },
@@ -61,7 +62,7 @@ Item {
     return source.filter(function(item) { return String(item.name || item.title).toLowerCase().indexOf(needle) >= 0 })
   }
   readonly property string pageTitle: ({ projects: "Projects", project: "Project settings",
-    reports: "Reports", templates: "PDF templates & appearance", settings: "Preferences & Drive", search: "Find a task", commands: "Commands",
+    reports: "Invoices", entries: "Time entries", templates: "PDF templates & appearance", settings: "Preferences & Drive", search: "Find a task", commands: "Commands",
     running: "Running · all projects", edit: draftTask ? "Edit task" : "New task",
     "new-project": "New project", confirm: "Confirm action", help: "Keyboard shortcuts" })[page] || "OmaTracker"
   implicitHeight: Math.min(Style.space(570), content.implicitHeight)
@@ -73,6 +74,8 @@ Item {
     history = history.concat([page]); page = next; query = ""; choiceIndex = 0
     actionsVisible = false
     if (next === "templates") tracker.refreshTemplates()
+    if (next === "reports") tracker.refreshInvoices()
+    if (next === "entries") tracker.refreshEntries(0)
     Qt.callLater(function() { scroll.contentY = 0; if (body.item && body.item.focusInitial) body.item.focusInitial(); else root.forceActiveFocus() })
     if (!reducedMotion) entrance.restart()
   }
@@ -208,7 +211,7 @@ Item {
         width: parent.width
         sourceComponent: root.page === "home" ? homePage : root.picker ? pickerPage
           : root.page === "edit" ? editorPage : root.page === "project" ? projectPage
-          : root.page === "reports" ? reportPage : root.page === "templates" ? templatePage : root.page === "settings" ? settingsPage
+          : root.page === "reports" ? reportPage : root.page === "entries" ? entriesPage : root.page === "templates" ? templatePage : root.page === "settings" ? settingsPage
           : root.page === "new-project" ? newProjectPage : root.page === "confirm" ? confirmPage : helpPage
       }
       Caption {
@@ -534,7 +537,7 @@ Item {
       }
       Field { id: title; label: "Task name"; text: root.draftTask ? root.draftTask.title : ""; placeholder: "What are you working on?"; onAccepted: save() }
       Field { id: duration; visible: !!root.draftTask; label: "Add time (optional)"; placeholder: "e.g. 25m or 1h30m"; onAccepted: save() }
-      Caption { visible: !!root.draftTask; text: "Manual time is included in reports, but not the hourly click." }
+      Caption { visible: !!root.draftTask; text: "Manual time uses its historical rate. The agent can add dated entries or correct specific entries." }
       Action { text: root.pendingAction ? "Saving…" : "Save task"; bordered: true; enabled: title.text.trim() !== "" && root.pendingAction === ""; onClicked: save() }
     }
   }
@@ -560,7 +563,7 @@ Item {
       Field { id: company; label: "Prepared by (optional)"; Component.onCompleted: text = root.project ? root.project.companyName : "" }
       Field { id: rate; objectName: "hourlyRate"; label: "Hourly rate (optional)"; placeholder: "e.g. 80.00"; Component.onCompleted: text = root.tracker.activeProjectEstimate ? root.tracker.activeProjectEstimate.hourlyRate : "" }
       Field { id: currency; objectName: "currency"; label: "Currency"; placeholder: "USD / EUR"; Component.onCompleted: text = root.project && root.project.rate ? root.project.rate.currency : "" }
-      Caption { text: "Leave the rate empty to remove it. New reports use the current rate; queued reports retain their amounts." }
+      Caption { text: "Leave the rate empty for non-billable work. Recorded time keeps its historical rate. The counter amount is a current-rate estimate; invoices use entry history." }
       Action {
         text: "Save project"; bordered: true
         enabled: name.text.trim() !== "" && root.pendingAction === ""
@@ -574,30 +577,68 @@ Item {
     }
   }
   Component {
+    id: entriesPage
+    Column {
+      spacing: Style.space(10)
+      function focusInitial() { refreshEntries.forceActiveFocus() }
+      Caption { text: "Dated entries retain historical rates. Corrections record a reason; invoiced time requires void/reissue." }
+      Action { id: refreshEntries; text: "Refresh / first page"; onClicked: root.tracker.refreshEntries(0) }
+      Repeater {
+        model: root.tracker.timeEntries || []
+        Column {
+          required property var modelData
+          width: parent.width; spacing: Style.space(4)
+          Caption { text: modelData.entry.taskTitle + " · " + modelData.entry.seconds + "s\n" + new Date(modelData.entry.startedAt).toISOString() + "\n" + (modelData.billing.resolved ? modelData.billing.rate ? "Billable · " + modelData.billing.rate.currency : "Non-billable" : "Historical rate unresolved") }
+          Field { id: adjustment; label: "Adjustment in seconds (+ / −)"; input.validator: IntValidator {} }
+          Field { id: reason; label: "Correction reason" }
+          Action { text: "Apply correction"; enabled: adjustment.text.trim() !== "" && adjustment.input.acceptableInput && Number(adjustment.text) !== 0 && reason.text.trim() !== ""; onClicked: root.tracker.correctEntry(modelData.entry.id, modelData.billing.revision, Number(adjustment.text), reason.text) }
+          Caption { text: "Corrections: " + modelData.corrections.length }
+        }
+      }
+      Action { text: "Next page"; visible: root.tracker.nextEntryOffset !== null; onClicked: root.tracker.refreshEntries(root.tracker.nextEntryOffset) }
+    }
+  }
+  Component {
     id: reportPage
     Column {
       spacing: Style.space(10)
       property string projectId: ""
       Component.onCompleted: projectId = root.project ? root.project.id : ""
       function focusInitial() { weekly.forceActiveFocus() }
-      Caption { text: "Automatic reports · " + (root.project ? root.project.name : "") }
-      Toggle { id: weekly; label: "Weekly reports"; Component.onCompleted: checked = !!root.project && root.project.exportWeekly }
-      Toggle { id: monthly; label: "Monthly reports"; Component.onCompleted: checked = !!root.project && root.project.exportMonthly }
+      Caption { text: "Invoice drafts · " + (root.project ? root.project.name : "") }
+      Toggle { id: weekly; label: "Weekly drafts"; Component.onCompleted: checked = root.tracker.invoiceSettings.cadence === "weekly"; onCheckedChanged: if (checked) monthly.checked = false }
+      Toggle { id: monthly; label: "Monthly drafts"; Component.onCompleted: checked = root.tracker.invoiceSettings.cadence === "monthly"; onCheckedChanged: if (checked) weekly.checked = false }
       Action {
-        text: "Save report settings"; bordered: true
-        onClicked: { root.pendingAction = "project-update"; root.tracker.updateProject(projectId, {
-          exportWeekly: weekly.checked, exportMonthly: monthly.checked }) }
+        text: "Save invoice schedule"; bordered: true
+        onClicked: root.tracker.configureBilling(projectId, weekly.checked ? "weekly" : monthly.checked ? "monthly" : "manual")
       }
       Ui.PanelSeparator { foreground: root.foreground }
       Action { text: "PDF template & appearance →"; onClicked: root.navigate("templates") }
-      Action { text: "Export previous completed week"; onClicked: { root.tracker.requestExport("weekly"); root.toast("Weekly export queued") } }
-      Action { text: "Export previous completed month"; onClicked: { root.tracker.requestExport("monthly"); root.toast("Monthly export queued") } }
-      Action { text: "Retry pending exports"; onClicked: root.tracker.retryReports() }
+      Action { text: "Draft previous completed week"; onClicked: { root.tracker.requestExport("weekly"); root.toast("Weekly drafts requested") } }
+      Action { text: "Draft previous completed month"; onClicked: { root.tracker.requestExport("monthly"); root.toast("Monthly drafts requested") } }
+      Action { text: "Refresh invoices"; onClicked: root.tracker.refreshInvoices() }
       Action {
-        text: root.tracker.backgroundChecksEnabled ? "Disable background report checks" : "Enable background report checks"
+        text: root.tracker.backgroundChecksEnabled ? "Disable scheduled drafts" : "Enable scheduled drafts"
         onClicked: root.tracker.setBackgroundChecks(!root.tracker.backgroundChecksEnabled)
       }
-      Caption { text: root.tracker.reportStatus + "\n" + root.tracker.setupStatus }
+      Caption { text: root.tracker.invoiceStatus + "\n" + root.tracker.setupStatus }
+      Caption { text: "Drafts never upload automatically. Use the agent for custom dates, corrections, payment details, and void/reissue." }
+      Repeater {
+        model: root.tracker.invoices || []
+        Column {
+          required property var modelData
+          width: parent.width; spacing: Style.space(4)
+          Caption { text: (modelData.number || "Draft") + " · " + modelData.state + " · " + modelData.totalText + "\n" + modelData.from + " → " + modelData.to + "\nPDF: " + modelData.renderStatus + " · Drive: " + modelData.uploadStatus }
+          Flow {
+            width: parent.width; spacing: Style.space(4)
+            Action { text: "Preview"; onClicked: root.tracker.invoiceAction(modelData.state === "draft" ? "preview" : "render", {id: modelData.id}) }
+            Action { text: "Refresh draft"; visible: modelData.state === "draft"; onClicked: root.tracker.invoiceAction("refresh", {id: modelData.id, revision: modelData.revision}) }
+            Action { objectName: "issueInvoice-" + modelData.id; text: "Issue"; visible: modelData.state === "draft"; onClicked: root.tracker.invoiceAction("issue", {id: modelData.id, revision: modelData.revision, date: Qt.formatDate(new Date(), "yyyy-MM-dd")}) }
+            Action { text: "Upload / retry"; visible: modelData.state === "issued" || modelData.state === "paid"; onClicked: root.tracker.invoiceAction("upload", {id: modelData.id}) }
+            Action { text: "Mark paid"; visible: modelData.state === "issued"; onClicked: root.tracker.invoiceAction("paid", {id: modelData.id, revision: modelData.revision, date: Qt.formatDate(new Date(), "yyyy-MM-dd")}) }
+          }
+        }
+      }
     }
   }
   Component {
@@ -607,27 +648,28 @@ Item {
       property string projectId: ""
       Component.onCompleted: projectId = root.project ? root.project.id : ""
       function focusInitial() { refreshTemplates.forceActiveFocus() }
-      Caption { text: "Selected: " + (root.project ? root.project.templateId : "") }
+      property string invoiceTemplate: root.tracker.invoiceSettings.templateId || "invoice"
+      Caption { text: "Invoice template: " + invoiceTemplate }
       Repeater {
         model: root.tracker.templates || []
         Action {
           required property var modelData
           width: parent.width; leftAlign: true
-          text: (root.project && root.project.templateId === modelData.id ? "✓ " : "") + modelData.name
+          text: (invoiceTemplate === modelData.id ? "✓ " : "") + modelData.name
           onClicked: root.tracker.updateProject(projectId, { templateId: modelData.id })
         }
       }
       Flow {
         width: parent.width; spacing: Style.space(4)
         Action { id: refreshTemplates; text: "Refresh"; onClicked: root.tracker.refreshTemplates() }
-        Action { text: "Preview saved settings"; onClicked: root.tracker.previewTemplate(root.project.templateId, projectId) }
-        Action { text: "Edit file"; enabled: !!root.project && root.project.templateId.indexOf("user:") === 0; onClicked: root.tracker.editTemplate(root.project.templateId) }
+        Action { text: "Preview saved settings"; onClicked: root.tracker.previewTemplate(invoiceTemplate, projectId) }
+        Action { text: "Edit file"; enabled: invoiceTemplate.indexOf("user:") === 0; onClicked: root.tracker.editTemplate(invoiceTemplate) }
       }
       Field { id: templateName; label: "New editable template name"; placeholder: "e.g. client-report" }
       Action {
         text: "Create editable copy and select"
         enabled: templateName.text.trim() !== ""
-        onClicked: root.tracker.createTemplate(templateName.text.trim(), root.project.templateId, projectId)
+        onClicked: root.tracker.createTemplate(templateName.text.trim(), invoiceTemplate, projectId)
       }
       Ui.PanelSeparator { foreground: root.foreground }
       Field { id: accent; label: "PDF accent color"; placeholder: "#476a89"; Component.onCompleted: text = root.project ? root.project.accentColor : "#476a89" }

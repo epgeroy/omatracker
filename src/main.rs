@@ -25,6 +25,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Structured agent API: run `agent help` for operations and request conventions.
+    Agent(omatracker::agent::Cli),
     /// Print the complete presentation state as JSON.
     Status {
         #[arg(long)]
@@ -179,8 +181,10 @@ enum ReportCommand {
         #[arg(value_parser = ["weekly", "monthly"])]
         period: String,
     },
-    /// Queue missing completed weekly/monthly reports, then process pending work.
+    /// Prepare scheduled invoice drafts (never issue or upload automatically).
     Check,
+    /// Legacy archive operation: generate old time reports, not invoices.
+    ArchiveCheck,
     /// Requeue failed or interrupted reports, then process them.
     Retry,
 }
@@ -221,6 +225,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let data_path = cli.data_path.unwrap_or(default_data_path()?);
     match cli.command {
+        Commands::Agent(request) => match omatracker::agent::run(&data_path, request) {
+            Ok(value) => println!("{}", serde_json::to_string(&value)?),
+            Err(error) => {
+                println!("{}", omatracker::agent::error(&error));
+                std::process::exit(1);
+            }
+        },
         Commands::Status { json, compact } => {
             if compact {
                 println!(
@@ -293,7 +304,10 @@ fn main() -> Result<()> {
         },
         Commands::Report { command } => match command {
             ReportCommand::Export { period } => export_report(&data_path, &period)?,
-            ReportCommand::Check => check_reports(&data_path)?,
+            ReportCommand::Check => {
+                omatracker::billing::check_scheduled(&data_path)?;
+            }
+            ReportCommand::ArchiveCheck => check_reports(&data_path)?,
             ReportCommand::Retry => retry_reports(&data_path)?,
         },
         Commands::Service { command } => match command {

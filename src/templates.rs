@@ -27,7 +27,8 @@ fn valid_name(name: &str) -> bool {
 }
 
 pub(crate) fn valid_id(id: &str) -> bool {
-    matches!(id, "detailed" | "summary") || id.strip_prefix("user:").is_some_and(valid_name)
+    matches!(id, "detailed" | "summary" | "invoice")
+        || id.strip_prefix("user:").is_some_and(valid_name)
 }
 
 pub fn directory() -> Result<PathBuf> {
@@ -68,7 +69,11 @@ pub fn path(id: &str) -> Result<PathBuf> {
 
 pub fn list() -> Result<Vec<TemplateInfo>> {
     let mut items = Vec::new();
-    for (id, name) in [("detailed", "Detailed"), ("summary", "Summary")] {
+    for (id, name) in [
+        ("detailed", "Detailed"),
+        ("summary", "Summary"),
+        ("invoice", "Invoice"),
+    ] {
         // Keep the catalog usable even when an override is temporarily missing.
         items.push(TemplateInfo {
             id: id.into(),
@@ -97,7 +102,7 @@ pub fn list() -> Result<Vec<TemplateInfo>> {
             }
         }
     }
-    items[2..].sort_by(|a, b| a.name.cmp(&b.name));
+    items[3..].sort_by(|a, b| a.name.cmp(&b.name));
     Ok(items)
 }
 
@@ -265,7 +270,11 @@ pub(crate) fn compile(bundle: &Path, pdf: &Path) -> Result<()> {
 pub fn validate(id: &str) -> Result<()> {
     let temporary = tempfile::tempdir()?;
     let bundle = temporary.path().join("bundle");
-    let data: Value = serde_json::from_str(include_str!("../tests/report-snapshot.json"))?;
+    let mut data: Value = serde_json::from_str(include_str!("../tests/report-snapshot.json"))?;
+    let invoice: Value = serde_json::from_str(include_str!("../tests/invoice-snapshot.json"))?;
+    for (key, value) in invoice.as_object().unwrap() {
+        data[key] = value.clone();
+    }
     capture(id, &data, &bundle)?;
     compile(&bundle, &temporary.path().join("preview.pdf"))
 }
@@ -278,13 +287,25 @@ pub fn preview(ledger: &Path, id: &str, project_id: Option<&str>) -> Result<Path
         .find(|project| project.id == project_id.unwrap_or(&state.active_project_id))
         .context("project does not exist")?;
     let bounds = crate::last_completed_period("weekly", crate::now_ms())?;
-    let data = serde_json::to_value(crate::build_snapshot(
+    let mut data = serde_json::to_value(crate::build_snapshot(
         &state,
         project,
         "weekly",
         bounds.start_at,
         bounds.end_at,
     ))?;
+    let config = crate::billing::settings(&state, &project.id)?;
+    let (from, to) = crate::billing::previous_period("monthly", &config.timezone)?;
+    let currency = project
+        .rate
+        .as_ref()
+        .map(crate::HourlyRate::currency)
+        .unwrap_or("USD");
+    let invoice = crate::billing::draft(&state, &project.id, &from, &to, currency)?;
+    let invoice_data = crate::billing::template_data(&invoice)?;
+    for key in ["invoice", "issuer", "client", "lines"] {
+        data[key] = invoice_data[key].clone();
+    }
     let root = cache_path()?.join("previews");
     fs::create_dir_all(&root)?;
     let temporary = tempfile::tempdir_in(root)?;

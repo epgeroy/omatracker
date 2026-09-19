@@ -33,6 +33,11 @@ FloatingWindow {
     property string templateError: ""
     property string templateStatus: ""
     property string reportStatus: "No reports queued"
+    property string invoiceStatus: "No invoices"
+    property var invoiceSettings: ({cadence: "monthly", templateId: "invoice"})
+    property var invoices: []
+    property var timeEntries: []
+    property var nextEntryOffset: null
     property string setupStatus: "Ready"
     property bool backgroundChecksEnabled: false
     property string lastAction: ""
@@ -51,6 +56,11 @@ FloatingWindow {
     function requestSync() { lastAction = "sync" }
     function requestExport(period) { lastAction = "export:" + period }
     function retryReports() { lastAction = "retry" }
+    function refreshInvoices() { lastAction = "invoices" }
+    function configureBilling(id, cadence) { lastAction = "billing:" + id; lastChanges = {cadence: cadence} }
+    function invoiceAction(action, input) { lastAction = "invoice:" + action; lastChanges = input }
+    function refreshEntries(offset) {}
+    function correctEntry(id, revision, delta, reason) { lastAction = "correct:" + id }
     function setBackgroundChecks(enabled) { lastAction = "background:" + enabled }
     function updateProject(id, changes) { lastAction = "project-update:" + id; lastChanges = changes }
     function updateDrive(remote, folder, startup) { lastAction = "drive-update" }
@@ -90,9 +100,27 @@ FloatingWindow {
     function test_report_save_preserves_template() {
       view.navigate("reports"); wait(20)
       keyClick(Qt.Key_Tab); keyClick(Qt.Key_Tab); keyClick(Qt.Key_Return)
-      compare(fake.lastAction, "project-update:p")
+      compare(fake.lastAction, "billing:p")
       verify(fake.lastChanges.templateId === undefined)
+      compare(fake.lastChanges.cadence, "monthly")
       fake.actionFinished("project-update", true)
+    }
+    function test_invoice_rows_use_explicit_id_and_revision() {
+      fake.invoices = [{id:"inv-test",revision:3,state:"draft",number:"",totalText:"USD 80.00",from:"2025-08-01",to:"2025-09-01",renderStatus:"pending",uploadStatus:"pending"}]
+      view.navigate("reports"); wait(30)
+      var issue = findChild(view, "issueInvoice-inv-test")
+      verify(issue !== null)
+      issue.clicked()
+      compare(fake.lastAction, "invoice:issue")
+      compare(fake.lastChanges.id, "inv-test")
+      compare(fake.lastChanges.revision, 3)
+      fake.invoices = []
+    }
+    function test_entry_rows_load_billing_and_correction_history() {
+      fake.timeEntries = [{entry:{id:"entry-test",taskTitle:"Design",seconds:3600,startedAt:1754820000000},billing:{resolved:true,rate:{currency:"USD"},revision:0},corrections:[]}]
+      view.navigate("entries"); wait(30)
+      compare(view.page, "entries")
+      fake.timeEntries = []
     }
     function test_rate_fields_keep_draft_and_save() {
       view.navigate("project"); wait(20)
@@ -130,7 +158,7 @@ FloatingWindow {
       keyClick(Qt.Key_Return); compare(view.page, "home"); compare(fake.lastAction, "")
     }
     function test_all_pages_load() {
-      var pages = ["projects", "project", "reports", "templates", "settings", "running", "commands", "new-project", "help"]
+      var pages = ["projects", "project", "reports", "entries", "templates", "settings", "running", "commands", "new-project", "help"]
       for (var i = 0; i < pages.length; i++) {
         view.navigate(pages[i]); wait(30); compare(view.page, pages[i]); view.back(); wait(20)
       }

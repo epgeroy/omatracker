@@ -1,6 +1,6 @@
 [package]
 name = "omatracker"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 license = "MIT"
 description = "Project time tracking backend and CLI for the Omarchy OmaTracker plugin"
@@ -8,6 +8,7 @@ description = "Project time tracking backend and CLI for the Omarchy OmaTracker 
 [dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["clock", "serde"] }
+chrono-tz = "0.10"
 clap = { version = "4.5", features = ["derive", "env"] }
 fs2 = "0.4"
 serde = { version = "1.0", features = ["derive"] }

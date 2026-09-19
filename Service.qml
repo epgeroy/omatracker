@@ -51,6 +51,11 @@ Item {
   property var templates: []
   property string templateError: ""
   property string templateStatus: ""
+  property var invoiceSettings: ({ cadence: "monthly", templateId: "invoice", timezone: "UTC" })
+  property var invoices: []
+  property var timeEntries: []
+  property var nextEntryOffset: null
+  property string invoiceStatus: "No invoices"
 
   readonly property bool busy: foregroundQueue.busy || backgroundQueue.busy
   readonly property bool anyRunning: runningTimers > 0
@@ -106,6 +111,8 @@ Item {
     loaded = false
     startupHandled = false
     diagnosticsReady = false
+    invoices = []
+    timeEntries = []
     foregroundQueue.reset()
     backgroundQueue.reset()
     feedbackQueue.reset()
@@ -119,7 +126,7 @@ Item {
 
   function enqueue(action, args, context) {
     var background = action === "sync" || action === "diagnostics" || action.indexOf("report-") === 0
-      || action === "template-preview" || action === "template-validate"
+      || action === "template-preview" || action === "template-validate" || action.indexOf("invoice-") === 0
     var queue = background ? backgroundQueue : foregroundQueue
     queue.enqueue(action, args, context)
   }
@@ -130,7 +137,28 @@ Item {
   }
 
   function handleProcess(action, context, exitCode, stdout, stderr) {
-    if (action.indexOf("template-") === 0) {
+    if (action.indexOf("invoice-") === 0 || action.indexOf("entry-") === 0) {
+      try {
+        var response = JSON.parse(stdout)
+        if (exitCode !== 0 || !response.ok) throw new Error(response.error ? response.error.message : stderr)
+        backendError = ""
+        if (action === "invoice-list") {
+          if (activeProject && context.projectId === activeProject.id) invoices = response.data.items
+        } else if (action === "entry-list") {
+          if (activeProject && context.projectId === activeProject.id) {
+            timeEntries = response.data.items
+            nextEntryOffset = response.data.nextOffset
+          }
+        }
+        else {
+          if (response.data.path) openTemplateFile(response.data.path)
+          refreshInvoices()
+          if (action.indexOf("entry-") === 0) refreshEntries(0)
+          refresh()
+        }
+        actionFinished(action, true)
+      } catch (error) { backendError = String(error); actionFinished(action, false) }
+    } else if (action.indexOf("template-") === 0) {
       if (exitCode !== 0) {
         templateError = String(stderr || stdout || "Template command failed").trim()
         templateStatus = ""
@@ -202,8 +230,14 @@ Item {
       var next = JSON.parse(raw)
       if (!next || !next.state) throw new Error("status output has no state")
       state = next.state
+      if (!activeProject || !next.activeProject || activeProject.id !== next.activeProject.id) {
+        invoices = []
+        timeEntries = []
+      }
       activeProject = next.activeProject || null
       activeProjectEstimate = next.activeProjectEstimate || null
+      invoiceSettings = next.invoiceSettings || ({ cadence: "monthly", templateId: "invoice", timezone: "UTC" })
+      invoiceStatus = next.invoiceStatus || "No invoices"
       activeTasks = Array.isArray(next.activeTasks) ? next.activeTasks : []
       runningTasks = Array.isArray(next.runningTasks) ? next.runningTasks : []
       preferences = next.preferences || ({ hourlyClick: true, volume: 25, reducedMotion: false })
@@ -341,7 +375,28 @@ Item {
 
   function requestExport(period) {
     if (period === "weekly" || period === "monthly")
-      enqueue("report-export", ["report", "export", period], {})
+      invoiceAction("period", { project: activeProject.id, cadence: period })
+  }
+
+  function invoiceAction(action, input) {
+    input = input || {}
+    enqueue("invoice-" + action, ["agent", "invoice." + action, "--input", JSON.stringify(input || {})], {projectId: input.project || (activeProject ? activeProject.id : "")})
+  }
+
+  function refreshInvoices() {
+    if (activeProject) invoiceAction("list", { project: activeProject.id, limit: 50 })
+  }
+
+  function configureBilling(project, cadence) {
+    enqueue("invoice-settings", ["agent", "project.configure", "--input", JSON.stringify({project: project, cadence: cadence})], {})
+  }
+
+  function refreshEntries(offset) {
+    if (activeProject) enqueue("entry-list", ["agent", "entry.list", "--input", JSON.stringify({project: activeProject.id, offset: offset || 0, limit: 20})], {projectId: activeProject.id})
+  }
+
+  function correctEntry(id, revision, delta, reason) {
+    enqueue("entry-correct", ["agent", "entry.correct", "--input", JSON.stringify({id: id, revision: revision, delta: delta, reason: reason})], {})
   }
 
   function retryReports() {

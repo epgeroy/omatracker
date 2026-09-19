@@ -11,12 +11,14 @@ use std::process::Command;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
+pub mod agent;
+pub mod billing;
 pub mod feedback;
 mod rates;
 pub mod templates;
 pub use rates::{Estimate, HourlyRate};
 
-pub const STATE_VERSION: u32 = 2;
+pub const STATE_VERSION: u32 = 3;
 pub const DEFAULT_PROJECT_ID: &str = "project-unassigned";
 
 fn default_drive_folder() -> String {
@@ -146,6 +148,7 @@ pub struct State {
     pub reports: Vec<Report>,
     pub drive: Drive,
     pub sync: SyncState,
+    pub billing: billing::Billing,
 }
 
 impl Default for State {
@@ -160,6 +163,7 @@ impl Default for State {
             reports: Vec::new(),
             drive: Drive::default(),
             sync: SyncState::default(),
+            billing: billing::Billing::default(),
         }
     }
 }
@@ -211,6 +215,8 @@ pub struct PresentationState {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PresentationStatus {
+    pub invoice_settings: billing::ProjectBilling,
+    pub invoice_status: String,
     pub state: PresentationState,
     pub now_ms: i64,
     pub active_project: Option<Project>,
@@ -519,10 +525,14 @@ fn normalize_state(state: &mut State) {
         if entry.started_at == 0 && entry.ended_at > 0 && entry.seconds > 0 {
             entry.started_at = entry.ended_at - entry.seconds * 1000;
         }
-        if entry.seconds == 0 && entry.ended_at > entry.started_at {
+        if entry.seconds == 0
+            && entry.ended_at > entry.started_at
+            && !state.billing.entries.contains_key(&entry.id)
+        {
             entry.seconds = (entry.ended_at - entry.started_at) / 1000;
         }
-        entry.ended_at > entry.started_at && entry.seconds > 0
+        entry.ended_at > entry.started_at
+            && (entry.seconds > 0 || state.billing.entries.contains_key(&entry.id))
     });
 
     state.reports.retain_mut(|report| {
@@ -648,8 +658,11 @@ pub fn parse_state(text: &str) -> Result<State> {
         .and_then(|object| object.get("version"))
         .map(number_value)
         .unwrap_or(0);
-    if value.is_array() || version < STATE_VERSION as i64 {
+    if value.is_array() || version < 2 {
         return Ok(migrate_legacy(value));
+    }
+    if version > STATE_VERSION as i64 {
+        bail!("ledger version {version} is newer than this application supports")
     }
     let mut state: State =
         serde_json::from_value(value).context("state file has an invalid schema")?;
@@ -666,6 +679,7 @@ fn read_state(path: &Path) -> Result<State> {
 }
 
 fn write_state(path: &Path, state: &State) -> Result<()> {
+    billing::backup_before_upgrade(path)?;
     let serialized =
         serde_json::to_string_pretty(state).context("could not serialize state")? + "\n";
     atomic_write(path, serialized.as_bytes())
@@ -722,10 +736,16 @@ fn mutate_state<T>(
 ) -> Result<T> {
     let lock = lock_file(path)?;
     let mut state = read_state(path)?;
+    billing::initialize(&mut state);
+    let previous_revision = state.billing.revision;
     let result = match mutate(&mut state)? {
         Mutation::Unchanged(result) => result,
         Mutation::Changed(result) => {
+            if state.billing.revision == previous_revision {
+                state.billing.revision += 1;
+            }
             normalize_state(&mut state);
+            billing::initialize(&mut state);
             write_state(path, &state)?;
             result
         }
@@ -774,7 +794,7 @@ fn task_seconds_from_entries<'a>(
 
 fn entry_display_seconds(entry: &Entry, since: i64) -> i64 {
     if since > 0 {
-        overlap_seconds(entry.started_at, entry.ended_at, since, entry.ended_at)
+        billing::entry_seconds(entry, since, entry.ended_at)
     } else {
         entry.seconds.max(0)
     }
@@ -828,7 +848,7 @@ fn entries_for_period(
         if entry.project_id != project_id {
             continue;
         }
-        let seconds = overlap_seconds(entry.started_at, entry.ended_at, start_at, end_at);
+        let seconds = billing::entry_seconds(entry, start_at, end_at);
         if seconds == 0 {
             continue;
         }
@@ -879,7 +899,7 @@ fn append_entry(
     if seconds == 0 {
         return;
     }
-    state.entries.push(Entry {
+    let entry = Entry {
         id: make_id("entry"),
         project_id: task.project_id.clone(),
         task_id: task.id.clone(),
@@ -888,7 +908,8 @@ fn append_entry(
         started_at: started_at.max(0),
         ended_at: ended_at.max(0),
         seconds,
-    });
+    };
+    billing::record_entry(state, entry);
 }
 
 pub fn create_project(path: &Path, name: &str) -> Result<String> {
@@ -932,6 +953,7 @@ pub fn select_project(path: &Path, id: &str) -> Result<()> {
 }
 
 pub fn update_project(path: &Path, id: &str, changes: ProjectChanges) -> Result<()> {
+    let requested_template = changes.template_id.clone();
     if let Some(template_id) = &changes.template_id {
         template_path(template_id)?;
     }
@@ -1022,7 +1044,21 @@ pub fn update_project(path: &Path, id: &str, changes: ProjectChanges) -> Result<
             project.export_monthly = export_monthly;
         }
         normalize_project(project);
-        Ok(if *project == previous {
+        let mut changed = *project != previous;
+        let rate = project.rate.clone();
+        if let Some(template) = requested_template {
+            let settings = state
+                .billing
+                .projects
+                .get_mut(id)
+                .context("billing settings missing")?;
+            changed |= settings.template_id != template;
+            settings.template_id = template;
+        }
+        if rate != previous.rate {
+            billing::record_rate(state, id, now_ms(), rate)?;
+        }
+        Ok(if !changed {
             Mutation::Unchanged(())
         } else {
             Mutation::Changed(())
@@ -1297,6 +1333,29 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
         })
         .collect();
     PresentationStatus {
+        invoice_settings: billing::settings(state, &state.active_project_id).unwrap_or_default(),
+        invoice_status: format!(
+            "{} draft · {} issued · {} paid · {} archived reports",
+            state
+                .billing
+                .invoices
+                .iter()
+                .filter(|i| i.state == "draft")
+                .count(),
+            state
+                .billing
+                .invoices
+                .iter()
+                .filter(|i| i.state == "issued")
+                .count(),
+            state
+                .billing
+                .invoices
+                .iter()
+                .filter(|i| i.state == "paid")
+                .count(),
+            state.reports.len()
+        ),
         state: PresentationState {
             version: state.version,
             active_project_id: state.active_project_id.clone(),
@@ -2202,7 +2261,7 @@ mod tests {
     #[test]
     fn migrates_v1_without_inventing_dates() {
         let state = parse_state(r#"{"version":1,"tasks":[{"id":"old","title":"Legacy","seconds":5400,"running":true,"startedAt":1000}]}"#).unwrap();
-        assert_eq!(state.version, 2);
+        assert_eq!(state.version, STATE_VERSION);
         assert_eq!(state.projects[0].name, "Unassigned");
         assert_eq!(state.tasks[0].legacy_seconds, 5400);
         assert!(state.entries.is_empty());

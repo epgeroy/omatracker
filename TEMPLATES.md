@@ -1,6 +1,6 @@
 # Custom PDF templates
 
-OmaTracker includes **Detailed** and **Summary** Typst layouts. To change a layout,
+OmaTracker includes **Invoice**, **Detailed**, and **Summary** Typst layouts. To change a layout,
 create a user-owned copy. Plugin updates never replace user copies.
 
 ## Panel workflow
@@ -67,6 +67,42 @@ include source locations. Tracking and template management work without Typst;
 validation, preview, and PDF rendering require it.
 
 ## Template contract
+
+### Invoice contract (version 1)
+
+Start new billing templates from `invoice`:
+
+```sh
+bin/omatracker agent template.create --input '{"name":"client-invoice","copyFrom":"invoice"}'
+bin/omatracker agent template.asset --input '{"id":"user:client-invoice","source":"/absolute/path/logo.svg"}'
+bin/omatracker agent project.configure --input '{"project":"PROJECT_ID","template":"user:client-invoice"}'
+```
+
+The template exports `render(data)`. Invoice data includes:
+
+| Field | Contents |
+| --- | --- |
+| `schemaVersion` | `1` |
+| `invoice` | ID, state, number, currency, from/to (end exclusive), timezone, issueDate/dueDate, dueDays, paymentInstructions, totalMinor/totalText, lines, allocations, exclusions |
+| `issuer`, `client` | name, address, email, registrationId, paymentInstructions |
+| `project` | project metadata and captured logoPath; use this logo path rather than the uncaptured nested invoice.project path |
+| `lines` | task, seconds, duration, historical rate, hourlyRate, amountMinor, amountText |
+| `period` | start, end, label |
+| `totalSeconds`, `totalDuration` | included billable time |
+
+Amounts are calculated by Rust. Render the supplied amount strings rather than
+recalculating them in Typst. Drafts have an empty number and should be marked DRAFT.
+The built-ins render invoices when invoice data is supplied and retain the legacy
+report renderer for archived-report data. Existing custom report templates are
+not rewritten: create an invoice copy and adapt branding before selecting it.
+
+`agent invoice.preview` previews a draft. Issuance freezes template inputs and
+images under `<ledger>.invoices/`; `agent invoice.render` uses that captured bundle.
+Imported assets must remain within the template directory. Template validation
+includes representative invoice and legacy fields; a real draft preview verifies
+actual client/project details. See [Agent API](AGENT_API.md).
+
+### Legacy report contract
 
 Each `template.typ` exports a `render(data)` function, for example:
 

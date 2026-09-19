@@ -418,7 +418,7 @@ fn report_checks_reach_recent_periods_and_find_late_entries() {
         serde_json::to_vec(&ledger).unwrap(),
     )
     .unwrap();
-    cli(home, &["report", "check"]);
+    cli(home, &["report", "archive-check"]);
     let first = state(home);
     let reports = first["reports"].as_array().unwrap();
     assert_eq!(reports.len(), 4);
@@ -429,7 +429,7 @@ fn report_checks_reach_recent_periods_and_find_late_entries() {
             .any(|report| report["period"] == "monthly" && report["startAt"] == recent)
     );
     let bytes = fs::read(home.join("state.json")).unwrap();
-    cli(home, &["report", "check"]);
+    cli(home, &["report", "archive-check"]);
     assert_eq!(fs::read(home.join("state.json")).unwrap(), bytes);
 
     let mut ledger: State = serde_json::from_value(first).unwrap();
@@ -447,7 +447,7 @@ fn report_checks_reach_recent_periods_and_find_late_entries() {
         serde_json::to_vec(&ledger).unwrap(),
     )
     .unwrap();
-    cli(home, &["report", "check"]);
+    cli(home, &["report", "archive-check"]);
     assert_eq!(state(home)["reports"].as_array().unwrap().len(), 6);
 }
 

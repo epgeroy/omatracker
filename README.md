@@ -2,7 +2,37 @@
 
 OmaTracker is an Omarchy bar widget backed by a native Rust CLI. Quickshell
 only presents JSON returned by the CLI and submits commands to it; the CLI owns
-the ledger, atomic writes, report snapshots, Typst rendering, and Drive uploads.
+the ledger, atomic writes, invoice snapshots, Typst rendering, and Drive uploads.
+
+## Agent-first invoicing
+
+Use the local versioned JSON interface and the bundled skill; no MCP server is
+needed:
+
+```sh
+bin/omatracker agent help
+bin/omatracker agent doctor
+bin/omatracker agent context
+bin/omatracker agent migration.preview
+```
+
+See [Agent API](AGENT_API.md) for project/client setup, historical rates, dated
+entries and reversible corrections, invoice issuance, and Drive operations.
+Load [the OmaTracker skill](skills/omatracker/SKILL.md) in your agent's skill
+directory, keeping its reference files with it and pointing it at this installation.
+The [manual invoice walkthrough](tests/manual-invoices.md) covers an isolated
+end-to-end setup including branding and Google Drive testing.
+
+Billability follows the rate at the time of work: a configured rate (including
+zero) is billable; no rate is non-billable. New projects default to monthly invoice
+drafts. Drafts are issued and uploaded explicitly. Invoice numbering, exact totals,
+duplicate-billing protection, payment status, and immutable PDFs are owned by Rust.
+
+First write upgrades old ledgers to version 3 and creates a sibling
+`.pre-invoices.bak`. Existing dated time needs an explicit historical-rate or
+non-billable decision before invoicing; old PDFs remain archived reports. Issued
+artifacts live in `<ledger>.invoices/`. Back up the ledger, invoice directory, and
+custom template library together.
 
 ## Plugin installation
 
@@ -54,7 +84,7 @@ be included when publishing a plugin release.
 
 The main view keeps the active timer, task list, project total and rate estimate
 in view. **Menu** (or `Ctrl+K`) opens searchable commands for project settings,
-reports, PDF templates, running timers across projects, and preferences/Drive.
+invoices, PDF templates, running timers across projects, and preferences/Drive.
 
 - `j/k` or arrows navigate; `Space`/`Enter` activate the visible selection.
 - `n` creates a named task; `e` edits; `h/l` or left/right reveal task actions.
@@ -104,9 +134,8 @@ bin/omatracker task add "Design"
 bin/omatracker task start <task-id>
 bin/omatracker task stop <task-id>
 bin/omatracker task edit <task-id> --add 1h30m
-bin/omatracker report export weekly
+bin/omatracker agent invoice.period --input '{"project":"PROJECT_ID","cadence":"monthly"}'
 bin/omatracker report check
-bin/omatracker report retry
 bin/omatracker sync
 bin/omatracker service install
 ```
@@ -123,20 +152,26 @@ systemd timer, which runs `report check` every 15 minutes even when Quickshell
 is closed. Use `bin/omatracker service remove` to disable and delete it. The
 panel exposes the same background-check setting and requests `report check`
 while it is running if there is no active systemd timer for its ledger. The CLI
-is the sole authority for which reports are due. Checks derive completed,
-occupied periods from entries, including histories longer than three years and
-late entries in previously empty periods.
+is the sole authority for which invoice drafts are due. `report check` now creates
+drafts only, including when called by an existing timer; it never issues or uploads.
+Monthly/weekly/manual cadence is exclusive per project. Late work in an issued
+period can produce a supplemental draft; existing drafts refresh explicitly.
 
 The panel uses `status --json --compact`, which calculates task totals in one
 aggregation pass and omits historical entries and reports. Dependency and timer
 diagnostics are checked separately at startup, every 15 minutes, and after timer
 settings change. The original full `status --json` response remains available.
 
-Reports, uploads, and diagnostics run in a separate command queue so starting
+Invoices, uploads, and diagnostics run in a separate command queue so starting
 and stopping timers stays responsive. Ledger uploads use an immutable temporary
 snapshot, allowing tracking to continue during a transfer.
 
 ## Project hourly rates
+
+**Invoice amounts use historical entry rates.** The counter estimate described
+below is a legacy presentation estimate at the current rate, not an invoice total.
+The old `report export`/`report retry` commands remain explicit archive operations;
+`report archive-check` maintains legacy reports. Use `agent invoice.*` for billing.
 
 In project settings, enter an **Hourly rate** and **Currency**, then save.
 Leave the rate empty and save to remove it; `0` is a valid rate. The panel shows

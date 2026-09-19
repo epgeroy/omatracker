@@ -12,7 +12,7 @@ impl Sandbox {
         let sandbox = Self(tempfile::tempdir().unwrap());
         fs::create_dir(sandbox.path("bin")).unwrap();
         fs::create_dir(sandbox.path("bundled")).unwrap();
-        for name in ["detailed", "summary"] {
+        for name in ["detailed", "summary", "invoice"] {
             fs::copy(
                 Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("templates/{name}.typ")),
                 sandbox.path(&format!("bundled/{name}.typ")),
@@ -97,9 +97,9 @@ fn custom_templates_survive_reload_and_missing_sources_without_silent_fallback()
     let folder = sandbox.custom();
     let catalog: Value =
         serde_json::from_str(&sandbox.run(&["template", "list", "--json"])).unwrap();
-    assert_eq!(catalog.as_array().unwrap().len(), 3);
-    assert_eq!(catalog[2]["id"], "user:client-report");
-    assert_eq!(catalog[2]["builtin"], false);
+    assert_eq!(catalog.as_array().unwrap().len(), 4);
+    assert_eq!(catalog[3]["id"], "user:client-report");
+    assert_eq!(catalog[3]["builtin"], false);
     assert_eq!(
         sandbox.run(&["template", "path", "user:client-report"]),
         folder.join("template.typ").display().to_string()

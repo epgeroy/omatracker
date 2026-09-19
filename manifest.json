@@ -2,17 +2,17 @@
   "schemaVersion": 1,
   "id": "epgeroy.omatracker",
   "name": "OmaTracker",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "author": "epgeroy",
   "license": "MIT",
-  "description": "Rust-backed project time tracking with Typst reports and Google Drive sync",
+  "description": "Agent-first project tracking, historical rates, PDF invoices and Google Drive sync",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "Panel.qml"
   },
   "barWidget": {
     "displayName": "OmaTracker",
-    "description": "Present Rust-backed project time tracking and PDF reports",
+    "description": "Present Rust-backed time tracking, corrections and PDF invoices",
     "category": "Productivity",
     "allowMultiple": false,
     "defaultSection": "center",

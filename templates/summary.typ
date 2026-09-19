@@ -1,4 +1,6 @@
+#import "invoice.typ": render as render-invoice
 #let render(data) = {
+  if "invoice" in data { return render-invoice(data) }
   let accent = rgb(data.project.accentColor)
   set page(
     paper: data.project.paper,

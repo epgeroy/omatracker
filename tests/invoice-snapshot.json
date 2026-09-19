@@ -1,0 +1,10 @@
+{
+  "invoice": {
+    "state": "issued", "number": "INV-2026-00001", "currency": "USD",
+    "from": "2026-08-01", "to": "2026-09-01", "issueDate": "2026-09-01", "dueDate": "2026-10-01",
+    "totalText": "USD 120.00", "paymentInstructions": "Bank transfer — reference invoice number"
+  },
+  "issuer": {"name":"Studio","address":"1 Example Street","email":"studio@example.test","registrationId":"123"},
+  "client": {"name":"Client","address":"2 Example Street","email":"client@example.test","registrationId":"456"},
+  "lines": [{"task":"Design","duration":"01:30:00","hourlyRate":"80.00","amountText":"USD 120.00"}]
+}
