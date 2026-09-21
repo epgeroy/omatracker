@@ -72,15 +72,16 @@ pub struct Task {
     pub id: String,
     pub project_id: String,
     pub title: String,
-    pub legacy_seconds: i64,
-    pub status: TaskStatus,
-    pub completed_at: i64,
     /// Zero means an older ledger did not record a creation time; migration must
     /// not promote it by inventing the current time.
     pub created_at: i64,
     /// The end of the most recent live Tracking interval, distinct from manual
     /// time and other task changes.
     pub last_tracked_at: i64,
+    pub activity_at: i64,
+    pub legacy_seconds: i64,
+    pub status: TaskStatus,
+    pub completed_at: i64,
     /// Read only when loading ledgers written before task statuses existed.
     #[serde(skip_serializing)]
     pub running: bool,
@@ -601,6 +602,32 @@ fn normalize_state(state: &mut State) {
             && (entry.seconds > 0 || state.billing.entries.contains_key(&entry.id))
     });
 
+    // Older ledgers did not persist task recency. Use only timestamps already
+    // evidenced by the ledger; never promote historical tasks at migration time.
+    for task in &mut state.tasks {
+        let recorded_at = state
+            .entries
+            .iter()
+            .filter(|entry| entry.task_id == task.id)
+            .map(|entry| entry.ended_at)
+            .max()
+            .unwrap_or(0);
+        if task.last_tracked_at == 0 {
+            task.last_tracked_at = recorded_at;
+        }
+        if task.activity_at == 0 {
+            task.activity_at = [
+                task.created_at,
+                task.last_tracked_at,
+                task.completed_at,
+                task.started_at,
+            ]
+            .into_iter()
+            .max()
+            .unwrap_or(0);
+        }
+    }
+
     state.reports.retain_mut(|report| {
         if !project_ids.contains(&report.project_id) {
             report.project_id = DEFAULT_PROJECT_ID.to_owned();
@@ -698,6 +725,9 @@ fn migrate_legacy(value: Value) -> State {
                 .unwrap_or_else(|| make_id("task")),
             project_id: DEFAULT_PROJECT_ID.to_owned(),
             title: sanitize_text(title, 160),
+            created_at: 0,
+            last_tracked_at: 0,
+            activity_at: 0,
             legacy_seconds: object
                 .and_then(|object| object.get("seconds"))
                 .map(number_value)
@@ -709,8 +739,6 @@ fn migrate_legacy(value: Value) -> State {
                 TaskStatus::Stopped
             },
             completed_at: 0,
-            created_at: 0,
-            last_tracked_at: 0,
             running,
             started_at: if running { started_at } else { 0 },
             display_since: 0,
@@ -1153,6 +1181,7 @@ pub fn add_task(path: &Path, title: Option<&str>) -> Result<String> {
         let clean_title = title
             .map(|title| sanitize_text(title, 160))
             .unwrap_or_default();
+        let now = now_ms();
         let task = Task {
             id: make_id("task"),
             project_id: state.active_project_id.clone(),
@@ -1161,11 +1190,12 @@ pub fn add_task(path: &Path, title: Option<&str>) -> Result<String> {
             } else {
                 clean_title
             },
+            created_at: now,
+            last_tracked_at: 0,
+            activity_at: now,
             legacy_seconds: 0,
             status: TaskStatus::Stopped,
             completed_at: 0,
-            created_at: now_ms(),
-            last_tracked_at: 0,
             running: false,
             started_at: 0,
             display_since: 0,
@@ -1230,7 +1260,7 @@ pub fn reopen_task(path: &Path, id: &str) -> Result<()> {
             .iter()
             .position(|task| task.id == id)
             .with_context(|| format!("task {id} does not exist"))?;
-        Ok(if entities::reopen_task(state, index) {
+        Ok(if entities::reopen_task(state, index, now_ms()) {
             Mutation::Changed(())
         } else {
             Mutation::Unchanged(())
@@ -1260,8 +1290,10 @@ pub fn reset_task(path: &Path, id: &str) -> Result<()> {
                 "",
             );
             state.tasks[index].started_at = now;
+            state.tasks[index].last_tracked_at = now;
         }
         state.tasks[index].display_since = now;
+        entities::record_activity(&mut state.tasks[index], now);
         Ok(Mutation::Changed(()))
     })
 }
@@ -1293,8 +1325,10 @@ pub fn reset_active_project(path: &Path) -> Result<()> {
                     "",
                 );
                 state.tasks[index].started_at = now;
+                state.tasks[index].last_tracked_at = now;
             }
             state.tasks[index].display_since = now;
+            entities::record_activity(&mut state.tasks[index], now);
         }
         Ok(Mutation::Changed(()))
     })
@@ -1346,6 +1380,9 @@ pub fn edit_task(
                 seconds,
                 "Manual entry",
             );
+        }
+        if changed {
+            entities::record_activity(&mut state.tasks[index], now_ms());
         }
         Ok(if changed {
             Mutation::Changed(())
@@ -2482,11 +2519,12 @@ mod tests {
             id: "task-a".to_owned(),
             project_id: project_id.clone(),
             title: "Design".to_owned(),
+            created_at: 0,
+            last_tracked_at: 0,
+            activity_at: 0,
             legacy_seconds: 120,
             status: TaskStatus::Stopped,
             completed_at: 0,
-            created_at: 0,
-            last_tracked_at: 0,
             running: false,
             started_at: 0,
             display_since: day + 60 * 1000,

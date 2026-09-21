@@ -29,10 +29,11 @@ or executable move. No `agent help` call is required for these documented reques
   repository path for a binding, `project.list` for enumeration, or `context` if
   running timers/draft summaries are needed. Do not automatically fetch both
   `context` and `project.list`.
-- Lists return `data.items`, `data.total`, and `data.nextOffset`. Follow `nextOffset`
-  with the same filters; a partial page does not establish absence. Project/client
-  lists hide archives unless `includeArchived: true`. Resolve ambiguous names with
-  the user. `context` includes active projects, not archived projects or entity tokens.
+- Legacy lists return `data.items`, `data.total`, and `data.nextOffset`. Follow
+  `nextOffset` with the same filters; a partial page does not establish absence.
+  `task.list` also has the cursor catalogue mode described below. Project/client lists
+  hide archives unless `includeArchived: true`. Resolve ambiguous names with the user.
+  `context` includes active projects, not archived projects or entity tokens.
 - Fetch additional fields only when needed: `project.get` returns `data.billing`
   (timezone, client ID, rate history); get/list responses provide `entityRevision`
   for entity edits. Refresh metadata after a conflict or meaningful intervening
@@ -287,9 +288,11 @@ Quit and restart OpenCode after removal; restart/reload skills in other harnesse
 - Monetary totals are exact integer minor-unit strings. Never sum different
   currencies. Lines are grouped by task title and historical rate; each line is
   rounded half-up once, then the invoice total sums the displayed line amounts.
-- Lists accept `offset` and `limit` (default 50, maximum 200), returning `items`,
-  `total`, and `nextOffset`. Follow pagination rather than assuming the first page
-  contains everything.
+- Legacy lists accept `offset` and `limit` (default 50, maximum 200), returning
+  `items`, `total`, and `nextOffset`. Cursor-mode `task.list` instead returns a
+  nullable opaque `nextCursor`; see [Task catalogue: cursor-mode `task.list`](#task-catalogue-cursor-mode-tasklist).
+  Follow the applicable continuation rather than assuming the first page contains
+  everything.
 - Use `--key` for retry-safe ledger writes, especially creation, manual entries,
   corrections, and issuance. Identical retries replay the original response;
   different arguments with the same key return `IDEMPOTENCY_CONFLICT`.
@@ -409,7 +412,7 @@ settings and the current rate, not tasks, entries, invoices, or rate history.
 
 | Action | Input |
 | --- | --- |
-| `task.list` | `project` (`running: true`, pagination) |
+| `task.list` | Legacy: `project` or `repository` (`running: true`, offset pagination). Catalogue: exactly one of `project` or `allProjects: true`, plus (`state`, `query`, `cursor`, `limit`) |
 | `task.get` | `id` |
 | `task.create` | `project`, `title` or `name` |
 | `task.update` | `id`, any of `name`/`title`, `add` duration, task-rate fields (`entityRevision`); one atomic edit |
@@ -435,6 +438,38 @@ task atomically records its active interval before setting `status: "done"` and
 `completedAt`. Done tasks reject `task.start` with `TASK_DONE`; they remain
 editable and accept manual historical entries. Use `task.reopen` before tracking
 again. Reopening clears `completedAt` and returns the task to `stopped`.
+
+#### Task catalogue: cursor-mode `task.list`
+
+Cursor mode is selected by supplying any of `state`, `query`, `cursor`, or
+`allProjects`. It requires exactly one active scope: a `project` ID or
+`allProjects: true`; it never reads the panel selection or a repository binding.
+All-project results exclude archived projects. `state` is one of `all` (the
+default), `open` (Stopped and Tracking), `stopped`, `tracking`, or `done`.
+`query` is a case-insensitive task-title substring.
+
+```sh
+# One active project, open work containing “review”:
+omatracker agent task.list --input '{"project":"PROJECT_ID","state":"open","query":"review"}'
+
+# Active projects only, including Done tasks, then continue with the opaque token:
+omatracker agent task.list --input '{"allProjects":true,"state":"all","limit":50}'
+omatracker agent task.list --input '{"allProjects":true,"state":"all","limit":50,"cursor":"NEXT_CURSOR"}'
+```
+
+The response contains `items`, `total`, and nullable `nextCursor`. Items include
+task lifecycle timestamps (`createdAt`, `lastTrackedAt`, `activityAt`,
+`completedAt`), `durationSeconds`, resolved rate/billing view, `entityRevision`,
+and `projectId`/`projectName`. They are ordered by Recent activity descending,
+then stable task ID. The default limit is 50; limits are clamped to 1–200.
+`nextCursor` is opaque and must be sent unchanged with the same scope and filters.
+It is a **best-effort continuation**, not a retained snapshot: concurrent task
+changes can move, duplicate, or omit items across pages; restart the query for a
+complete reconciliation.
+
+Calls without those cursor-mode inputs retain the established offset response
+(`offset` and `nextOffset`) and may use the legacy `project`/`repository` and
+`running` fields unchanged.
 
 For “yesterday, 20:00–23:00”, read `project.get` → `billing.timezone` and resolve
 both the date and endpoint offsets there. With local today fixed at September 19,

@@ -93,6 +93,112 @@ pub(crate) fn task_json(state: &State, task: &Task) -> Value {
     result
 }
 
+fn encode_cursor(activity_at: i64, id: &str) -> String {
+    serde_json::to_vec(&(activity_at, id))
+        .expect("cursor serialization is infallible")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn decode_cursor(cursor: &str) -> Result<(i64, String)> {
+    if !cursor.is_ascii() || !cursor.len().is_multiple_of(2) {
+        bail!("INVALID_INPUT: cursor is invalid")
+    }
+    let hex = |byte: u8| match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => bail!("INVALID_INPUT: cursor is invalid"),
+    };
+    let (pairs, _) = cursor.as_bytes().as_chunks::<2>();
+    let bytes: Result<Vec<_>> = pairs
+        .iter()
+        .map(|[high, low]| Ok((hex(*high)? << 4) | hex(*low)?))
+        .collect();
+    serde_json::from_slice(&bytes?).context("INVALID_INPUT: cursor is invalid")
+}
+
+pub(crate) fn catalogue(state: &State, input: &crate::agent::Input) -> Result<Value> {
+    let project = match (&input.project, input.all_projects) {
+        (Some(_), Some(true)) => {
+            bail!("INVALID_INPUT: supply exactly one of project or allProjects: true")
+        }
+        (Some(project), _) => {
+            crate::entities::active_project(state, project)?;
+            Some(project.as_str())
+        }
+        (None, Some(true)) => None,
+        _ => bail!("INVALID_INPUT: supply exactly one of project or allProjects: true"),
+    };
+    let lifecycle = input.state.as_deref().unwrap_or("all");
+    if !["all", "open", "stopped", "tracking", "done"].contains(&lifecycle) {
+        bail!("INVALID_INPUT: state must be all, open, stopped, tracking, or done")
+    }
+    let query = input.query.as_deref().unwrap_or("").to_lowercase();
+    let now = crate::now_ms();
+    let mut tasks: Vec<_> = state
+        .tasks
+        .iter()
+        .filter_map(|task| {
+            let matches_scope = project.map_or_else(
+                || !state.billing.archived_projects.contains(&task.project_id),
+                |project| task.project_id == project,
+            );
+            let matches_lifecycle = match lifecycle {
+                "all" => true,
+                "open" => !task.is_done(),
+                "stopped" => task.status == crate::TaskStatus::Stopped,
+                "tracking" => task.is_tracking(),
+                "done" => task.is_done(),
+                _ => unreachable!(),
+            };
+            let project = state
+                .projects
+                .iter()
+                .find(|project| project.id == task.project_id)?;
+            (matches_scope && matches_lifecycle && task.title.to_lowercase().contains(&query))
+                .then_some((task, project))
+        })
+        .collect();
+    tasks.sort_by(|(left, _), (right, _)| {
+        right
+            .activity_at
+            .cmp(&left.activity_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let total = tasks.len();
+    let cursor = input.cursor.as_deref().map(decode_cursor).transpose()?;
+    let start = cursor.map_or(0, |(activity_at, id)| {
+        tasks
+            .iter()
+            .position(|(task, _)| {
+                task.activity_at < activity_at || (task.activity_at == activity_at && task.id > id)
+            })
+            .unwrap_or(tasks.len())
+    });
+    let limit = input.limit.unwrap_or(50).clamp(1, 200);
+    let page = &tasks[start..tasks.len().min(start.saturating_add(limit))];
+    let items: Vec<_> = page
+        .iter()
+        .map(|(task, project)| {
+            let mut item = task_json(state, task);
+            item["durationSeconds"] = json!(crate::task_seconds(state, task, now));
+            item["projectId"] = json!(task.project_id);
+            item["projectName"] = json!(project.name);
+            item["activityAt"] = json!(task.activity_at);
+            item
+        })
+        .collect();
+    let next_cursor = (start + page.len() < tasks.len())
+        .then(|| {
+            page.last()
+                .map(|(task, _)| encode_cursor(task.activity_at, &task.id))
+        })
+        .flatten();
+    Ok(json!({"items":items,"total":total,"nextCursor":next_cursor}))
+}
+
 /// Called inside the ledger transaction; existing invoice amounts are never changed.
 pub(crate) fn assign(
     state: &mut State,
@@ -232,6 +338,9 @@ pub(crate) fn assign(
     } else {
         None
     };
+    if !unchanged || adjustment_id.is_some() {
+        crate::entities::record_activity(&mut state.tasks[index], now);
+    }
     let mut result = task_json(state, &state.tasks[index]);
     result["rateChange"] = json!({"effectiveAt":effective_at,"appliedEntryIds":applied,"adjustmentId":adjustment_id,
         "skipped":{"alreadyRated":already_rated,"invoiced":invoiced,"externallyBilled":externally_billed}});

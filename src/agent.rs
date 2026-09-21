@@ -134,6 +134,12 @@ pub struct Input {
     pub offset: usize,
     pub limit: Option<usize>,
     pub running: bool,
+    pub state: Option<String>,
+    pub cursor: Option<String>,
+    pub query: Option<String>,
+    pub all_projects: Option<bool>,
+    #[serde(skip)]
+    pub cursor_mode: bool,
     pub include_archived: bool,
     pub inherit_rate: bool,
     pub apply_existing: bool,
@@ -283,6 +289,9 @@ pub(crate) fn read(action: &str, state: &State, i: &Input) -> Result<Value> {
         }
         "task.get" => crate::task_rates::task_json(state,state.tasks.iter().find(|t| Some(&t.id) == i.id.as_ref()).context("TASK_NOT_FOUND")?),
         "task.list" => {
+            if i.cursor_mode {
+                return crate::task_rates::catalogue(state, i);
+            }
             let project = project_id(state, i)?;
             page(
                 &state
@@ -561,11 +570,13 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
         "task.create" => {
             let project = project_id(state, i)?;
             crate::entities::active_project(state, &project)?;
+            let now = crate::now_ms();
             let task = crate::Task {
                 id: crate::make_id("task"),
                 project_id: project,
                 title: task_name(i)?,
-                created_at: crate::now_ms(),
+                created_at: now,
+                activity_at: now,
                 ..Default::default()
             };
             state.tasks.push(task);
@@ -584,7 +595,11 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
                 bail!("INVALID_INPUT: supply name/title, add, or a task rate setting")
             }
             if i.name.is_some() || i.title.is_some() {
-                state.tasks[index].title = task_name(i)?;
+                let title = task_name(i)?;
+                if state.tasks[index].title != title {
+                    state.tasks[index].title = title;
+                    crate::entities::record_activity(&mut state.tasks[index], crate::now_ms());
+                }
             }
             if let Some(duration) = &i.add {
                 let seconds = crate::parse_duration(duration)?;
@@ -596,6 +611,9 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
                     .context("INVALID_INPUT: added duration is too large")?;
                 let task = state.tasks[index].clone();
                 crate::append_entry(state, &task, start, now, seconds, "Manual entry");
+                if seconds > 0 {
+                    crate::entities::record_activity(&mut state.tasks[index], now);
+                }
             }
             if rate_change {
                 crate::task_rates::assign(state, &id, i)?
@@ -651,7 +669,7 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
                 .iter()
                 .position(|t| t.id == id)
                 .context("TASK_NOT_FOUND")?;
-            crate::entities::reopen_task(state, index);
+            crate::entities::reopen_task(state, index, crate::now_ms());
             crate::task_rates::task_json(state, &state.tasks[index])
         }
         "entry.add" => {
@@ -690,6 +708,14 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
                 (end - start) / 1000,
                 i.note.as_deref().unwrap_or("Manual entry"),
             );
+            crate::entities::record_activity(
+                state
+                    .tasks
+                    .iter_mut()
+                    .find(|candidate| candidate.id == task.id)
+                    .unwrap(),
+                crate::now_ms(),
+            );
             if let Some(rate) = explicit_rate {
                 // Only entries appended by this transaction are priced. No future policy
                 // or previously recorded entry is changed, even across rate boundaries.
@@ -706,15 +732,29 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
             }
             json!({"entries":state.entries[offset..].iter().map(|e| json!({"entry":e,"billing":state.billing.entries[&e.id]})).collect::<Vec<_>>()})
         }
-        "entry.correct" => json!(b::correct(
-            state,
-            &required(&i.id, "id")?,
-            revision(i)?,
-            i.delta
-                .context("INVALID_INPUT: delta in seconds required")?,
-            &required(&i.reason, "reason")?,
-            None
-        )?),
+        "entry.correct" => {
+            let id = required(&i.id, "id")?;
+            let task_id = state
+                .entries
+                .iter()
+                .find(|entry| entry.id == id)
+                .map(|entry| entry.task_id.clone());
+            let correction = b::correct(
+                state,
+                &id,
+                revision(i)?,
+                i.delta
+                    .context("INVALID_INPUT: delta in seconds required")?,
+                &required(&i.reason, "reason")?,
+                None,
+            )?;
+            if let Some(task_id) = task_id
+                && let Some(task) = state.tasks.iter_mut().find(|task| task.id == task_id)
+            {
+                crate::entities::record_activity(task, crate::now_ms());
+            }
+            json!(correction)
+        }
         "entry.undo" => {
             let id = required(&i.id, "id")?;
             let correction = state
@@ -732,14 +772,25 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
             {
                 bail!("INVALID_STATE: correction already reversed")
             }
-            json!(b::correct(
+            let task_id = state
+                .entries
+                .iter()
+                .find(|entry| entry.id == correction.entry_id)
+                .map(|entry| entry.task_id.clone());
+            let correction = b::correct(
                 state,
                 &correction.entry_id,
                 revision(i)?,
                 correction.before - correction.after,
                 &required(&i.reason, "reason")?,
-                Some(id)
-            )?)
+                Some(id),
+            )?;
+            if let Some(task_id) = task_id
+                && let Some(task) = state.tasks.iter_mut().find(|task| task.id == task_id)
+            {
+                crate::entities::record_activity(task, crate::now_ms());
+            }
+            json!(correction)
         }
         "migration.resolve" => {
             let project = project_id(state, i)?;
@@ -1162,8 +1213,14 @@ pub fn execute(path: &Path, action: &str, input: Value, key: Option<&str>) -> Re
     if action == "work.record-batch" {
         return crate::workflows::record_batch(path, input, key);
     }
-    let args: Input =
+    let mut args: Input =
         serde_json::from_value(input.clone()).context("INVALID_INPUT: malformed request")?;
+    args.cursor_mode = action == "task.list"
+        && input.as_object().is_some_and(|object| {
+            object
+                .keys()
+                .any(|key| ["state", "cursor", "query", "allProjects"].contains(&key.as_str()))
+        });
     if action == "request.key" {
         return Ok(
             json!({"schemaVersion":1,"ok":true,"changed":false,"data":{"key":crate::make_id("request")}}),

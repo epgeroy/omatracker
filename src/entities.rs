@@ -44,6 +44,7 @@ pub(crate) fn start_task(state: &mut State, index: usize, now: i64) -> Result<bo
     }
     task.status = TaskStatus::Tracking;
     task.started_at = now;
+    task.activity_at = now;
     Ok(true)
 }
 
@@ -63,6 +64,7 @@ pub(crate) fn stop_task(state: &mut State, index: usize, now: i64) -> bool {
     state.tasks[index].status = TaskStatus::Stopped;
     state.tasks[index].started_at = 0;
     state.tasks[index].last_tracked_at = now;
+    state.tasks[index].activity_at = now;
     true
 }
 
@@ -73,16 +75,22 @@ pub(crate) fn complete_task(state: &mut State, index: usize, now: i64) -> bool {
     stop_task(state, index, now);
     state.tasks[index].status = TaskStatus::Done;
     state.tasks[index].completed_at = now;
+    state.tasks[index].activity_at = now;
     true
 }
 
-pub(crate) fn reopen_task(state: &mut State, index: usize) -> bool {
+pub(crate) fn reopen_task(state: &mut State, index: usize, now: i64) -> bool {
     if !state.tasks[index].is_done() {
         return false;
     }
     state.tasks[index].status = TaskStatus::Stopped;
     state.tasks[index].completed_at = 0;
+    state.tasks[index].activity_at = now;
     true
+}
+
+pub(crate) fn record_activity(task: &mut Task, now: i64) {
+    task.activity_at = now;
 }
 
 pub(crate) fn remove_task(state: &mut State, id: &str) -> Result<Task> {
