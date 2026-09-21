@@ -1,5 +1,18 @@
 # OmaTracker
 
+Track project time from the Omarchy bar, then turn it into PDF invoices.
+
+![OmaTracker task list opened from the Omarchy bar](preview.png)
+
+- Start, stop and correct timers per project and task, with historical hourly rates.
+- Issue immutable PDF invoices rendered with [Typst](https://typst.app), and
+  optionally upload them to Google Drive through [rclone](https://rclone.org).
+- Let coding agents record time through a local JSON interface; no MCP server is needed.
+
+Add the widget with `omarchy plugin add https://github.com/epgeroy/omatracker --enable`,
+or see [Plugin installation](#plugin-installation) and [Development build](#development-build).
+Typst and rclone are optional; `omatracker agent doctor` reports whether they are available.
+
 OmaTracker is an Omarchy bar widget backed by a native Rust CLI. Quickshell
 only presents JSON returned by the CLI and submits commands to it; the CLI owns
 the ledger, atomic writes, invoice snapshots, Typst rendering, and Drive uploads.
