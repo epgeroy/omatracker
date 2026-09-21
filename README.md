@@ -4,7 +4,7 @@ Track project time from the Omarchy bar, then turn it into PDF invoices.
 
 ![OmaTracker task list opened from the Omarchy bar](preview.png)
 
-- Start, stop and correct timers per project and task, with historical hourly rates.
+- Manage tasks as stopped, tracking, or done; correct time with historical hourly rates.
 - Issue immutable PDF invoices rendered with [Typst](https://typst.app), and
   optionally upload them to Google Drive through [rclone](https://rclone.org).
 - Let coding agents record time through a local JSON interface; no MCP server is needed.
@@ -131,13 +131,13 @@ zero) is billable; no rate is non-billable. New projects default to monthly invo
 drafts. Drafts are issued and uploaded explicitly. Invoice numbering, exact totals,
 duplicate-billing protection, payment status, and immutable PDFs are owned by Rust.
 
-First write upgrades old ledgers to version 4. A version 3 ledger gets a sibling
+First write upgrades old ledgers to version 5. A version 3 ledger gets a sibling
 `.pre-task-rates.bak`; older ledgers get `.pre-invoices.bak`. Existing dated time
 from pre-invoice ledgers needs an explicit historical-rate or
 non-billable decision before invoicing; old PDFs remain archived reports. Issued
 artifacts live in `<ledger>.invoices/`. Back up the ledger, invoice directory, and
 custom template library together.
-Version 4 protects task-rate metadata: older 0.5 backends reject it instead of
+Version 5 adds task status and completion timestamps: older backends reject it instead of
 rewriting data they do not understand. Update the shared CLI/widget backend together.
 
 ## Clear all user data
@@ -275,6 +275,8 @@ bin/omatracker project select <project-id>
 bin/omatracker task add "Design"
 bin/omatracker task start <task-id>
 bin/omatracker task stop <task-id>
+bin/omatracker task complete <task-id>
+bin/omatracker task reopen <task-id>
 bin/omatracker task edit <task-id> --add 1h30m
 bin/omatracker agent invoice.period --input '{"project":"PROJECT_ID","cadence":"monthly"}'
 bin/omatracker report check

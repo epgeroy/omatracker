@@ -1,4 +1,4 @@
-use omatracker::{State, agent};
+use omatracker::{STATE_VERSION, State, TaskStatus, agent};
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
 
@@ -256,7 +256,7 @@ fn running_unrated_time_can_be_backfilled_without_stopping_the_timer() {
     state.tasks[0].started_at = omatracker::now_ms() - 3_600_000;
     fs::write(&app.path, serde_json::to_vec(&state).unwrap()).unwrap();
     let result = app.rate(json!({"rate":"50","currency":"USD","applyExisting":true}));
-    assert_eq!(result["running"], true);
+    assert_eq!(result["status"], "tracking");
     assert_eq!(
         result["rateChange"]["appliedEntryIds"]
             .as_array()
@@ -265,7 +265,7 @@ fn running_unrated_time_can_be_backfilled_without_stopping_the_timer() {
         1
     );
     let state = app.state();
-    assert!(state.tasks[0].running);
+    assert_eq!(state.tasks[0].status, TaskStatus::Tracking);
     assert!(state.entries[0].seconds >= 3600);
     assert!(state.tasks[0].started_at >= state.entries[0].ended_at);
     assert_eq!(
@@ -324,7 +324,7 @@ fn task_editor_update_is_atomic_and_presentation_exposes_effective_rate_and_toke
 }
 
 #[test]
-fn version_three_upgrade_preserves_billing_and_uses_a_separate_backup() {
+fn legacy_upgrade_preserves_billing_and_uses_a_separate_backup() {
     let app = App::new();
     app.add("2025-08-01T10:00:00Z", 3600);
     let mut old = serde_json::to_value(app.state()).unwrap();
@@ -345,7 +345,7 @@ fn version_three_upgrade_preserves_billing_and_uses_a_separate_backup() {
     assert_eq!(fs::read(&backup).unwrap(), original);
     assert_eq!(fs::read(&invoice_backup).unwrap(), b"{\"version\":2}");
     let state = app.state();
-    assert_eq!(state.version, 4);
+    assert_eq!(state.version, STATE_VERSION);
     let bytes = fs::read(&app.path).unwrap();
     call(&app.path, "migration.apply", json!({}));
     assert_eq!(fs::read(&app.path).unwrap(), bytes);

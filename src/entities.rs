@@ -1,5 +1,5 @@
 //! Entity lifecycle operations shared by CLI adapters. Call with the ledger lock held.
-use crate::{State, Task};
+use crate::{State, Task, TaskStatus};
 use anyhow::{Context, Result, bail};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -34,9 +34,22 @@ pub(crate) fn active_project(state: &State, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn finish_task(state: &mut State, index: usize, now: i64) {
-    if !state.tasks[index].running {
-        return;
+pub(crate) fn start_task(state: &mut State, index: usize, now: i64) -> Result<bool> {
+    let task = &mut state.tasks[index];
+    if task.is_done() {
+        bail!("TASK_DONE: reopen the task before tracking time")
+    }
+    if task.is_tracking() {
+        return Ok(false);
+    }
+    task.status = TaskStatus::Tracking;
+    task.started_at = now;
+    Ok(true)
+}
+
+pub(crate) fn stop_task(state: &mut State, index: usize, now: i64) -> bool {
+    if !state.tasks[index].is_tracking() {
+        return false;
     }
     let task = state.tasks[index].clone();
     crate::append_entry(
@@ -47,8 +60,28 @@ fn finish_task(state: &mut State, index: usize, now: i64) {
         (now - task.started_at) / 1000,
         "",
     );
-    state.tasks[index].running = false;
+    state.tasks[index].status = TaskStatus::Stopped;
     state.tasks[index].started_at = 0;
+    true
+}
+
+pub(crate) fn complete_task(state: &mut State, index: usize, now: i64) -> bool {
+    if state.tasks[index].is_done() {
+        return false;
+    }
+    stop_task(state, index, now);
+    state.tasks[index].status = TaskStatus::Done;
+    state.tasks[index].completed_at = now;
+    true
+}
+
+pub(crate) fn reopen_task(state: &mut State, index: usize) -> bool {
+    if !state.tasks[index].is_done() {
+        return false;
+    }
+    state.tasks[index].status = TaskStatus::Stopped;
+    state.tasks[index].completed_at = 0;
+    true
 }
 
 pub(crate) fn remove_task(state: &mut State, id: &str) -> Result<Task> {
@@ -57,7 +90,7 @@ pub(crate) fn remove_task(state: &mut State, id: &str) -> Result<Task> {
         .iter()
         .position(|t| t.id == id)
         .context("TASK_NOT_FOUND")?;
-    finish_task(state, index, crate::now_ms());
+    stop_task(state, index, crate::now_ms());
     Ok(state.tasks.remove(index))
 }
 
@@ -79,7 +112,7 @@ pub(crate) fn archive_project(state: &mut State, id: &str) -> Result<bool> {
         .filter_map(|(index, t)| (t.project_id == id).then_some(index))
         .collect();
     for index in indices {
-        finish_task(state, index, now);
+        stop_task(state, index, now);
     }
     state.billing.archived_projects.insert(id.into());
     state

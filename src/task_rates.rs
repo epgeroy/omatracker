@@ -141,7 +141,7 @@ pub(crate) fn assign(
 
     // Include already-running, unrated time in an explicitly requested backfill.
     // Its old pricing is captured before installing the new policy.
-    if input.apply_existing && state.tasks[index].running {
+    if input.apply_existing && state.tasks[index].is_tracking() {
         let task = state.tasks[index].clone();
         crate::append_entry(
             state,

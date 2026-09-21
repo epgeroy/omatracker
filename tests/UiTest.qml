@@ -13,8 +13,9 @@ FloatingWindow {
   QtObject {
     id: fake
     property var activeTasks: [
-      { id: "one", title: "Production ready", running: true, displaySeconds: 608 },
-      { id: "two", title: "Documentation", running: false, displaySeconds: 120 }]
+      { id: "one", title: "Production ready", status: "tracking", displaySeconds: 608 },
+      { id: "two", title: "Documentation", status: "stopped", displaySeconds: 120 }]
+    property var completedTasks: []
     property var activeProject: ({ id: "p", name: "Test project", clientName: "Test client", companyName: "", exportWeekly: true, exportMonthly: false, templateId: "detailed", accentColor: "#476a89", paper: "a4", logoPath: "" })
     property var state: ({ projects: [activeProject], drive: { remote: "test", folder: "Tracker", syncOnStartup: false } })
     property var runningTasks: [activeTasks[0]]
@@ -47,6 +48,8 @@ FloatingWindow {
     function displayTaskSeconds(task) { return task.displaySeconds }
     function stopTimer(id) { lastAction = "stop:" + id }
     function startTimer(id) { lastAction = "start:" + id }
+    function completeTask(id) { lastAction = "complete:" + id }
+    function reopenTask(id) { lastAction = "reopen:" + id }
     function addTask(title) { lastAction = "add:" + title }
     function renameAndAddManualTime(id, title, time, rates) { lastAction = "edit:" + id + ":" + title + ":" + time; lastChanges = rates || {} }
     function removeTask(id) { lastAction = "remove:" + id }
@@ -167,9 +170,24 @@ FloatingWindow {
       keyClick(Qt.Key_Escape); compare(view.page, "home")
     }
     function test_delete_requires_explicit_confirmation() {
-      keyClick(Qt.Key_D); wait(20)
-      compare(view.page, "confirm"); compare(fake.lastAction, "")
-      keyClick(Qt.Key_Return); compare(view.page, "home"); compare(fake.lastAction, "")
+        keyClick(Qt.Key_D); wait(20)
+        compare(view.page, "confirm"); compare(view.confirmAction, "delete"); compare(fake.lastAction, "")
+        keyClick(Qt.Key_Return); compare(view.page, "home"); compare(fake.lastAction, "")
+    }
+    function test_complete_requires_confirmation_and_done_tasks_can_reopen() {
+      keyClick(Qt.Key_J); keyClick(Qt.Key_J); keyClick(Qt.Key_L); keyClick(Qt.Key_L); keyClick(Qt.Key_L)
+      compare(view.actionIndex, 2)
+      keyClick(Qt.Key_Return); compare(view.page, "confirm"); compare(fake.lastAction, "")
+      keyClick(Qt.Key_Tab); keyClick(Qt.Key_Return); compare(fake.lastAction, "complete:two")
+      fake.actionFinished("task-complete", true); compare(view.page, "home")
+
+      fake.completedTasks = [{ id: "done", title: "Completed task", status: "done", displaySeconds: 300 }]
+      verify(!view.completedExpanded)
+      view.completedExpanded = true; wait(20)
+      var reopen = findChild(view, "reopenTask-done")
+      verify(reopen !== null)
+      reopen.clicked(); compare(fake.lastAction, "reopen:done")
+      fake.completedTasks = []
     }
     function test_all_pages_load() {
       var pages = ["projects", "project", "reports", "entries", "templates", "settings", "running", "commands", "new-project", "help"]

@@ -98,7 +98,7 @@ pub fn tracked_millis(state: &State, now: i64) -> i64 {
             state
                 .tasks
                 .iter()
-                .filter(|task| task.running)
+                .filter(|task| task.is_tracking())
                 .map(|task| (task.started_at, now)),
         )
         .map(|(start, end)| (start.max(0), end.min(now)))
@@ -170,7 +170,7 @@ mod tests {
                 },
             ],
             tasks: vec![Task {
-                running: true,
+                status: crate::TaskStatus::Tracking,
                 started_at: 1_201_000,
                 display_since: 1_501_000,
                 legacy_seconds: 9999,

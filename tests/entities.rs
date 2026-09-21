@@ -1,4 +1,4 @@
-use omatracker::{DEFAULT_PROJECT_ID, State, agent};
+use omatracker::{DEFAULT_PROJECT_ID, State, TaskStatus, agent};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -110,7 +110,7 @@ fn task_update_supports_name_and_title_without_changing_history_or_timer() {
     assert_eq!(renamed["title"], "New Task");
     assert_eq!(renamed["id"], app.task);
     assert_eq!(renamed["startedAt"], before.tasks[0].started_at);
-    assert_eq!(renamed["running"], true);
+    assert_eq!(renamed["status"], "tracking");
     assert_eq!(app.state().entries[0].task_title, "Original Task");
     let again = request(
         &app.path,
@@ -255,7 +255,7 @@ fn project_delete_archives_history_stops_timers_and_clears_active_bindings() {
     assert_eq!(result["archived"], true);
     let state = app.state();
     assert_eq!(state.active_project_id, DEFAULT_PROJECT_ID);
-    assert!(!state.tasks[0].running);
+    assert_eq!(state.tasks[0].status, TaskStatus::Stopped);
     assert_eq!(state.entries.len(), 2);
     assert!(state.entries.iter().all(|e| e.project_id == app.project));
     assert!(state.billing.bindings.is_empty());

@@ -240,7 +240,7 @@ pub(crate) fn initialize(state: &mut State) {
             || state
                 .tasks
                 .iter()
-                .any(|t| t.running || t.legacy_seconds > 0));
+                .any(|t| t.is_tracking() || t.legacy_seconds > 0));
     for project in &state.projects {
         state
             .billing
@@ -515,7 +515,9 @@ pub fn allocations(
     excluded.running_timers = state
         .tasks
         .iter()
-        .filter(|t| t.project_id == project && t.running && t.started_at < to && now_ms() > from)
+        .filter(|t| {
+            t.project_id == project && t.is_tracking() && t.started_at < to && now_ms() > from
+        })
         .count();
     out.sort_by(|a, b| (a.start_at, &a.entry_id).cmp(&(b.start_at, &b.entry_id)));
     (out, excluded)

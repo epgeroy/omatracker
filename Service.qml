@@ -23,6 +23,7 @@ Item {
   property var activeProjectEstimate: null
   property string projectUpdateError: ""
   property var activeTasks: []
+  property var completedTasks: []
   property var runningTasks: []
   property var preferences: ({ hourlyClick: true, volume: 25, reducedMotion: false })
   property bool feedbackEnabled: true
@@ -99,7 +100,7 @@ Item {
   function displayTaskSeconds(task) {
     if (!task) return 0
     return Math.max(0, Math.floor(Number(task.displaySeconds) || 0))
-      + (task.running === true ? elapsedSinceStatus : 0)
+      + (task.status === "tracking" ? elapsedSinceStatus : 0)
   }
 
   function configure(path) {
@@ -239,6 +240,7 @@ Item {
       invoiceSettings = next.invoiceSettings || ({ cadence: "monthly", templateId: "invoice", timezone: "UTC" })
       invoiceStatus = next.invoiceStatus || "No invoices"
       activeTasks = Array.isArray(next.activeTasks) ? next.activeTasks : []
+      completedTasks = Array.isArray(next.completedTasks) ? next.completedTasks : []
       runningTasks = Array.isArray(next.runningTasks) ? next.runningTasks : []
       preferences = next.preferences || ({ hourlyClick: true, volume: 25, reducedMotion: false })
       totalTrackedSeconds = Math.max(0, Math.floor(Number(next.totalTrackedSeconds) || 0))
@@ -246,7 +248,7 @@ Item {
       runningTimers = Math.max(0, Math.floor(Number(next.runningTimers) || 0))
       activeProjectRunningTimers = 0
       for (var i = 0; i < activeTasks.length; i++)
-        if (activeTasks[i].running === true) activeProjectRunningTimers++
+        if (activeTasks[i].status === "tracking") activeProjectRunningTimers++
       nowMs = Math.max(0, Number(next.nowMs) || Date.now())
       statusSnapshotMs = nowMs
       reportStatus = String(next.reportStatus || "No PDF reports queued")
@@ -342,6 +344,14 @@ Item {
 
   function stopTimer(id) {
     enqueue("task-stop", ["task", "stop", id], {})
+  }
+
+  function completeTask(id) {
+    enqueue("task-complete", ["task", "complete", id], {})
+  }
+
+  function reopenTask(id) {
+    enqueue("task-reopen", ["task", "reopen", id], {})
   }
 
   function resetTimer(id) {

@@ -24,7 +24,7 @@ pub mod templates;
 mod workflows;
 pub use rates::{Estimate, HourlyRate};
 
-pub const STATE_VERSION: u32 = 4;
+pub const STATE_VERSION: u32 = 5;
 pub const DEFAULT_PROJECT_ID: &str = "project-unassigned";
 
 fn default_drive_folder() -> String {
@@ -57,6 +57,15 @@ impl Default for Project {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskStatus {
+    #[default]
+    Stopped,
+    Tracking,
+    Done,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Task {
@@ -64,9 +73,23 @@ pub struct Task {
     pub project_id: String,
     pub title: String,
     pub legacy_seconds: i64,
+    pub status: TaskStatus,
+    pub completed_at: i64,
+    /// Read only when loading ledgers written before task statuses existed.
+    #[serde(skip_serializing)]
     pub running: bool,
     pub started_at: i64,
     pub display_since: i64,
+}
+
+impl Task {
+    pub fn is_tracking(&self) -> bool {
+        self.status == TaskStatus::Tracking
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.status == TaskStatus::Done
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
@@ -229,6 +252,7 @@ pub struct PresentationStatus {
     pub now_ms: i64,
     pub active_project: Option<Project>,
     pub active_tasks: Vec<TaskView>,
+    pub completed_tasks: Vec<TaskView>,
     pub running_tasks: Vec<TaskView>,
     pub preferences: feedback::Preferences,
     pub total_tracked_seconds: i64,
@@ -508,8 +532,15 @@ fn normalize_state(state: &mut State) {
         task.legacy_seconds = task.legacy_seconds.max(0);
         task.started_at = task.started_at.max(0);
         task.display_since = task.display_since.max(0);
-        if !task.running || task.started_at == 0 {
-            task.running = false;
+        task.completed_at = task.completed_at.max(0);
+        task.status = match task.status {
+            TaskStatus::Done => TaskStatus::Done,
+            TaskStatus::Tracking if task.started_at > 0 => TaskStatus::Tracking,
+            _ if task.running && task.started_at > 0 => TaskStatus::Tracking,
+            _ => TaskStatus::Stopped,
+        };
+        task.running = false;
+        if !task.is_tracking() {
             task.started_at = 0;
         }
     }
@@ -646,6 +677,12 @@ fn migrate_legacy(value: Value) -> State {
                 .map(number_value)
                 .unwrap_or(0)
                 .max(0),
+            status: if running {
+                TaskStatus::Tracking
+            } else {
+                TaskStatus::Stopped
+            },
+            completed_at: 0,
             running,
             started_at: if running { started_at } else { 0 },
             display_since: 0,
@@ -800,7 +837,7 @@ fn task_seconds_from_entries<'a>(
     for entry in entries {
         total += entry_display_seconds(entry, since);
     }
-    if task.running {
+    if task.is_tracking() {
         total += ((now - task.started_at.max(since)) / 1000).max(0);
     }
     total
@@ -883,7 +920,7 @@ fn entries_for_period(
     }
     let cap = now.min(end_at);
     for task in &state.tasks {
-        if task.project_id != project_id || !task.running {
+        if task.project_id != project_id || !task.is_tracking() {
             continue;
         }
         let seconds = overlap_seconds(task.started_at, cap, start_at, end_at);
@@ -1097,6 +1134,8 @@ pub fn add_task(path: &Path, title: Option<&str>) -> Result<String> {
                 clean_title
             },
             legacy_seconds: 0,
+            status: TaskStatus::Stopped,
+            completed_at: 0,
             running: false,
             started_at: 0,
             display_since: 0,
@@ -1109,24 +1148,18 @@ pub fn add_task(path: &Path, title: Option<&str>) -> Result<String> {
 
 pub fn start_task(path: &Path, id: &str) -> Result<()> {
     mutate_state(path, |state| {
-        let project = &state
+        let index = state
             .tasks
             .iter()
-            .find(|t| t.id == id)
-            .context("TASK_NOT_FOUND")?
-            .project_id;
-        entities::active_project(state, project)?;
-        let task = state
-            .tasks
-            .iter_mut()
-            .find(|task| task.id == id)
-            .with_context(|| format!("task {id} does not exist"))?;
-        if task.running {
-            return Ok(Mutation::Unchanged(()));
-        }
-        task.running = true;
-        task.started_at = now_ms();
-        Ok(Mutation::Changed(()))
+            .position(|task| task.id == id)
+            .context("TASK_NOT_FOUND")?;
+        let project = state.tasks[index].project_id.clone();
+        entities::active_project(state, &project)?;
+        Ok(if entities::start_task(state, index, now_ms())? {
+            Mutation::Changed(())
+        } else {
+            Mutation::Unchanged(())
+        })
     })
 }
 
@@ -1137,22 +1170,41 @@ pub fn stop_task(path: &Path, id: &str) -> Result<()> {
             .iter()
             .position(|task| task.id == id)
             .with_context(|| format!("task {id} does not exist"))?;
-        if !state.tasks[index].running {
-            return Ok(Mutation::Unchanged(()));
-        }
-        let now = now_ms();
-        let task = state.tasks[index].clone();
-        append_entry(
-            state,
-            &task,
-            task.started_at,
-            now,
-            (now - task.started_at) / 1000,
-            "",
-        );
-        state.tasks[index].running = false;
-        state.tasks[index].started_at = 0;
-        Ok(Mutation::Changed(()))
+        Ok(if entities::stop_task(state, index, now_ms()) {
+            Mutation::Changed(())
+        } else {
+            Mutation::Unchanged(())
+        })
+    })
+}
+
+pub fn complete_task(path: &Path, id: &str) -> Result<()> {
+    mutate_state(path, |state| {
+        let index = state
+            .tasks
+            .iter()
+            .position(|task| task.id == id)
+            .with_context(|| format!("task {id} does not exist"))?;
+        Ok(if entities::complete_task(state, index, now_ms()) {
+            Mutation::Changed(())
+        } else {
+            Mutation::Unchanged(())
+        })
+    })
+}
+
+pub fn reopen_task(path: &Path, id: &str) -> Result<()> {
+    mutate_state(path, |state| {
+        let index = state
+            .tasks
+            .iter()
+            .position(|task| task.id == id)
+            .with_context(|| format!("task {id} does not exist"))?;
+        Ok(if entities::reopen_task(state, index) {
+            Mutation::Changed(())
+        } else {
+            Mutation::Unchanged(())
+        })
     })
 }
 
@@ -1163,8 +1215,11 @@ pub fn reset_task(path: &Path, id: &str) -> Result<()> {
             .iter()
             .position(|task| task.id == id)
             .with_context(|| format!("task {id} does not exist"))?;
+        if state.tasks[index].is_done() {
+            bail!("TASK_DONE: reopen the task before resetting its counter")
+        }
         let now = now_ms();
-        if state.tasks[index].running {
+        if state.tasks[index].is_tracking() {
             let task = state.tasks[index].clone();
             append_entry(
                 state,
@@ -1189,13 +1244,15 @@ pub fn reset_active_project(path: &Path) -> Result<()> {
             .tasks
             .iter()
             .enumerate()
-            .filter_map(|(index, task)| (task.project_id == active_project_id).then_some(index))
+            .filter_map(|(index, task)| {
+                (task.project_id == active_project_id && !task.is_done()).then_some(index)
+            })
             .collect();
         if indices.is_empty() {
             return Ok(Mutation::Unchanged(()));
         }
         for index in indices {
-            if state.tasks[index].running {
+            if state.tasks[index].is_tracking() {
                 let task = state.tasks[index].clone();
                 append_entry(
                     state,
@@ -1334,13 +1391,25 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
         .tasks
         .iter()
         .zip(totals.iter().copied())
-        .filter(|(task, _)| task.project_id == state.active_project_id)
+        .filter(|(task, _)| task.project_id == state.active_project_id && !task.is_done())
         .map(|(task, display_seconds)| TaskView {
             billing: task_rates::view(state, task, now),
             display_seconds,
             task: task.clone(),
         })
         .collect();
+    let mut completed_tasks: Vec<_> = state
+        .tasks
+        .iter()
+        .zip(totals.iter().copied())
+        .filter(|(task, _)| task.project_id == state.active_project_id && task.is_done())
+        .map(|(task, display_seconds)| TaskView {
+            billing: task_rates::view(state, task, now),
+            display_seconds,
+            task: task.clone(),
+        })
+        .collect();
+    completed_tasks.sort_by_key(|view| std::cmp::Reverse(view.task.completed_at));
     PresentationStatus {
         invoice_settings: billing::settings(state, &state.active_project_id).unwrap_or_default(),
         invoice_status: format!(
@@ -1383,11 +1452,12 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
             .map(|rate| rate.estimate(active_project_seconds)),
         active_project,
         active_tasks,
+        completed_tasks,
         running_tasks: state
             .tasks
             .iter()
             .zip(totals)
-            .filter(|(task, _)| task.running)
+            .filter(|(task, _)| task.is_tracking())
             .map(|(task, display_seconds)| TaskView {
                 billing: task_rates::view(state, task, now),
                 task: task.clone(),
@@ -1397,7 +1467,7 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
         preferences: feedback::Preferences::default(),
         total_tracked_seconds,
         active_project_seconds,
-        running_timers: state.tasks.iter().filter(|task| task.running).count(),
+        running_timers: state.tasks.iter().filter(|task| task.is_tracking()).count(),
         report_status: report_status_text(state),
         sync_status: state.sync.status.clone(),
         sync_error: state.sync.error.clone(),
@@ -1655,7 +1725,7 @@ fn occupied_periods(
             state
                 .tasks
                 .iter()
-                .filter(|task| task.project_id == project_id && task.running)
+                .filter(|task| task.project_id == project_id && task.is_tracking())
                 .map(|task| (task.started_at, now)),
         );
     let mut periods = BTreeSet::new();
@@ -2284,7 +2354,7 @@ mod tests {
         assert_eq!(state.projects[0].name, "Unassigned");
         assert_eq!(state.tasks[0].legacy_seconds, 5400);
         assert!(state.entries.is_empty());
-        assert!(state.tasks[0].running);
+        assert_eq!(state.tasks[0].status, TaskStatus::Tracking);
     }
 
     #[test]
@@ -2325,6 +2395,8 @@ mod tests {
             project_id: project_id.clone(),
             title: "Design".to_owned(),
             legacy_seconds: 120,
+            status: TaskStatus::Stopped,
+            completed_at: 0,
             running: false,
             started_at: 0,
             display_since: day + 60 * 1000,
@@ -2383,7 +2455,7 @@ mod tests {
                 project_id: DEFAULT_PROJECT_ID.into(),
                 legacy_seconds: 999,
                 display_since: 2500,
-                running: true,
+                status: TaskStatus::Tracking,
                 started_at: 6000,
                 ..Task::default()
             },
@@ -2516,7 +2588,7 @@ mod tests {
         });
         state.tasks.push(Task {
             project_id: DEFAULT_PROJECT_ID.into(),
-            running: true,
+            status: TaskStatus::Tracking,
             started_at: date(2024, 3, 1),
             ..Task::default()
         });

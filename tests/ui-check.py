@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix="omatracker-ui-") as work:
         ledger = Path(env["OMATRACKER_UI_LEDGER"])
         state = json.loads(ledger.read_text())
         age = 3585 if "--hour-demo" in sys.argv else 608
-        state["tasks"][0].update(running=True, startedAt=int(time.time() * 1000) - age * 1000)
+        state["tasks"][0].update(status="tracking", startedAt=int(time.time() * 1000) - age * 1000)
         ledger.write_text(json.dumps(state))
         if "--smoke" in sys.argv:
             subprocess.run(backend + ["feedback", "configure", "--hourly-click", "true", "--volume", "0", "--reduced-motion", "false"], env=env, check=True)

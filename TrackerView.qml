@@ -17,6 +17,7 @@ Item {
   property bool heroFocused: true
   property bool actionsVisible: false
   property int actionIndex: 0
+  property bool completedExpanded: false
   property int choiceIndex: 0
   property string query: ""
   property var draftTask: null
@@ -27,6 +28,7 @@ Item {
   property string notice: ""
   property real savedScroll: 0
   readonly property var tasks: tracker.activeTasks || []
+  readonly property var completedTasks: tracker.completedTasks || []
   readonly property var project: tracker.activeProject
   readonly property var preferences: tracker.preferences
   readonly property bool reducedMotion: preferences.reducedMotion === true
@@ -37,8 +39,8 @@ Item {
   readonly property var selectedTask: tasks.find(function(t) { return t.id === root.selectedId }) || null
   readonly property var heroTask: {
     var remembered = tasks.find(function(t) { return t.id === root.heroId })
-    if (remembered && remembered.running) return remembered
-    return tasks.find(function(t) { return t.running }) || remembered || tasks[0] || null
+    if (remembered && remembered.status === "tracking") return remembered
+    return tasks.find(function(t) { return t.status === "tracking" }) || remembered || tasks[0] || null
   }
   readonly property bool picker: ["projects", "search", "commands", "running"].indexOf(page) >= 0
   readonly property var commandItems: [
@@ -95,7 +97,7 @@ Item {
   function toggleTask(task) {
     if (!task || !tracker.loaded) return
     heroId = task.id
-    task.running ? tracker.stopTimer(task.id) : tracker.startTimer(task.id)
+    task.status === "tracking" ? tracker.stopTimer(task.id) : tracker.startTimer(task.id)
   }
   function confirm(action, id, title) {
     confirmAction = action; confirmId = id; confirmTitle = title; navigate("confirm")
@@ -129,7 +131,8 @@ Item {
     var task = heroFocused ? heroTask : selectedTask; if (!task) return
     if (index === 0) toggleTask(task)
     else if (index === 1) editTask(task)
-    else if (index === 2) confirm("reset", task.id, "Reset “" + task.title + "”?")
+    else if (index === 2) confirm("complete", task.id, "Complete “" + task.title + "”?")
+    else if (index === 3) confirm("reset", task.id, "Reset “" + task.title + "”?")
     else confirm("delete", task.id, "Delete “" + task.title + "”?")
   }
 
@@ -146,7 +149,7 @@ Item {
       else if (heroFocused && !heroTask) newTask()
       else toggleTask(heroFocused ? heroTask : selectedTask)
     } else if (!picker && (event.key === Qt.Key_Right || event.text === "l")) {
-      actionIndex = actionsVisible ? Math.min(3, actionIndex + 1) : 0; actionsVisible = true
+        actionIndex = actionsVisible ? Math.min(4, actionIndex + 1) : 0; actionsVisible = true
     }
     else if (!picker && (event.key === Qt.Key_Left || event.text === "h")) { if (actionIndex === 0) actionsVisible = false; else actionIndex-- }
     else if (!picker && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) switchPanelRequested(event.modifiers & Qt.ShiftModifier ? -1 : 1)
@@ -156,8 +159,8 @@ Item {
     else if (!picker && event.text === "/") navigate("search")
     else if (!picker && event.text === ",") navigate("settings")
     else if (!picker && event.text === "?") navigate("help")
-    else if (!picker && (event.text === "d" || event.text === "x")) rowAction(3)
-    else if (!picker && event.text === "r") rowAction(2)
+    else if (!picker && (event.text === "d" || event.text === "x")) rowAction(4)
+    else if (!picker && event.text === "r") rowAction(3)
     else return
     event.accepted = true
   }
@@ -342,10 +345,10 @@ Item {
           width: parent.width - Style.space(28)
           spacing: Style.space(10)
           Caption {
-            text: !root.tracker.loaded ? "CONNECTING" : root.heroTask ? root.heroTask.running ? "● TRACKING" : "○ PAUSED" : "READY WHEN YOU ARE"
-            color: root.heroTask && root.heroTask.running ? Color.accent : root.secondary
+            text: !root.tracker.loaded ? "CONNECTING" : root.heroTask ? root.heroTask.status === "tracking" ? "● TRACKING" : "○ STOPPED" : "READY WHEN YOU ARE"
+            color: root.heroTask && root.heroTask.status === "tracking" ? Color.accent : root.secondary
             SequentialAnimation on opacity {
-              running: root.panelOpen && !root.reducedMotion && !!root.heroTask && root.heroTask.running
+              running: root.panelOpen && !root.reducedMotion && !!root.heroTask && root.heroTask.status === "tracking"
               loops: 1
               NumberAnimation { from: 0.5; to: 1; duration: 180 }
             }
@@ -369,7 +372,7 @@ Item {
             spacing: Style.space(8)
             Action {
               objectName: "primaryAction"
-              text: root.heroTask ? (root.heroTask.running ? "Ⅱ Pause" : "▶ Resume") + " · Space" : "+ New task · n"
+              text: root.heroTask ? (root.heroTask.status === "tracking" ? "Ⅱ Stop" : "▶ Track") + " · Space" : "+ New task · n"
               bordered: true
               hasCursor: root.page === "home" && root.heroFocused && !root.actionsVisible && root.activeFocus
               onClicked: root.heroTask ? root.toggleTask(root.heroTask) : root.newTask()
@@ -406,7 +409,7 @@ Item {
           foreground: root.foreground
           hasCursor: !root.heroFocused && root.selectedId === modelData.id && !root.actionsVisible && root.activeFocus
           Accessible.role: Accessible.ListItem
-          Accessible.name: modelData.title + (modelData.running ? ", running, " : ", paused, ") + duration.text
+            Accessible.name: modelData.title + (modelData.status === "tracking" ? ", tracking, " : ", stopped, ") + duration.text
           MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
@@ -418,8 +421,8 @@ Item {
           Text {
             id: marker
             x: Style.space(6); anchors.verticalCenter: parent.verticalCenter
-            text: taskRow.hasCursor ? "›" : taskRow.modelData.running ? "●" : "○"
-            color: taskRow.modelData.running ? Color.accent : root.secondary
+            text: taskRow.hasCursor ? "›" : taskRow.modelData.status === "tracking" ? "●" : "○"
+            color: taskRow.modelData.status === "tracking" ? Color.accent : root.secondary
             font.family: Style.font.family; font.pixelSize: Style.font.body
           }
           Caption {
@@ -460,12 +463,50 @@ Item {
           Flow {
             width: parent.width; spacing: Style.space(4)
             Repeater {
-              model: ["Start / pause", "Edit", "Reset…", "Delete…"]
+              model: ["Start / stop", "Edit", "Complete…", "Reset…", "Delete…"]
               Action {
                 required property string modelData
                 required property int index
                 text: modelData; hasCursor: root.actionIndex === index
                 onClicked: root.rowAction(index)
+              }
+            }
+          }
+        }
+      }
+      Action {
+        visible: root.completedTasks.length > 0
+        width: parent.width; leftAlign: true
+        text: (root.completedExpanded ? "⌄" : "›") + " COMPLETED · " + root.completedTasks.length
+        onClicked: root.completedExpanded = !root.completedExpanded
+      }
+      Column {
+        visible: root.completedExpanded && root.completedTasks.length > 0
+        width: parent.width
+        spacing: Style.space(4)
+        Repeater {
+          model: root.completedTasks
+          delegate: Ui.CursorSurface {
+            required property var modelData
+            width: parent.width
+            height: completedRow.implicitHeight + Style.space(10)
+            foreground: root.foreground
+            Column {
+              id: completedRow
+              x: Style.space(8); y: Style.space(5)
+              width: parent.width - Style.space(16)
+              spacing: Style.space(3)
+              Caption {
+                width: parent.width
+                text: "✓ " + modelData.title + " · " + TaskModel.formatDuration(root.tracker.displayTaskSeconds(modelData))
+                color: root.foreground
+                elide: Text.ElideRight
+              }
+              Flow {
+                width: parent.width; spacing: Style.space(4)
+                Action { objectName: "reopenTask-" + modelData.id; text: "Reopen"; onClicked: root.tracker.reopenTask(modelData.id) }
+                Action { text: "Edit"; onClicked: root.editTask(modelData) }
+                Action { text: "Delete…"; onClicked: root.confirm("delete", modelData.id, "Delete “" + modelData.title + "”?") }
               }
             }
           }
@@ -734,13 +775,17 @@ Item {
       spacing: Style.space(12)
       function focusInitial() { cancel.forceActiveFocus() }
       Caption { text: root.confirmTitle; font.pixelSize: Style.font.heading; color: root.foreground }
-      Caption { text: root.confirmAction === "delete" ? "The task leaves your list. Its recorded time remains in the report ledger."
-        : "Visible counters start again at zero. Recorded time remains in reports; running timers keep running." }
+      Caption {
+        text: root.confirmAction === "delete" ? "The task leaves your list. Its recorded time remains in the report ledger."
+          : root.confirmAction === "complete" ? "Tracking stops and its elapsed time is recorded. You can reopen the task later."
+          : "Visible counters start again at zero. Recorded time remains in reports; running timers keep running."
+      }
       Action { id: cancel; text: "Cancel"; bordered: true; onClicked: root.back() }
       Action {
-        text: root.confirmAction === "delete" ? "Delete task" : "Reset counters"; foreground: Color.urgent
+        text: root.confirmAction === "delete" ? "Delete task" : root.confirmAction === "complete" ? "Complete task" : "Reset counters"; foreground: Color.urgent
         onClicked: {
           if (root.confirmAction === "delete") { root.pendingAction = "task-remove"; root.tracker.removeTask(root.confirmId) }
+          else if (root.confirmAction === "complete") { root.pendingAction = "task-complete"; root.tracker.completeTask(root.confirmId) }
           else if (root.confirmAction === "reset") { root.pendingAction = "task-reset"; root.tracker.resetTimer(root.confirmId) }
           else { root.pendingAction = "task-reset-project"; root.tracker.resetActiveProject() }
         }

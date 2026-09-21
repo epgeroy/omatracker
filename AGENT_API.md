@@ -60,7 +60,7 @@ bin/omatracker agent task.create --input '{"project":"PROJECT_ID","title":"demo"
 bin/omatracker agent task.start --input '{"id":"TASK_ID"}' --key START_KEY
 ```
 
-Check `ok` on each response and `data.running: true` on start. No `task.list` or
+Check `ok` on each response and `data.status: "tracking"` on start. No `task.list` or
 revision lookup is needed for a new task. Retain the exact inputs and resolved
 keys; retry a lost response with the same key, never another creation.
 Full [task fields](#time-and-corrections) and [retry conventions](#agent-requests)
@@ -416,6 +416,8 @@ settings and the current rate, not tasks, entries, invoices, or rate history.
 | `task.rate` | `id`, exactly one of `rate` + `currency`, `noRate: true`, or `inheritRate: true` (`effectiveAt`, `applyExisting`, `reason`, `entityRevision`) |
 | `task.remove` / `task.delete` | `id` (`entityRevision`); stop its timer, remove the task, retain dated entries |
 | `task.start` / `task.stop` | `id` (task ID) |
+| `task.complete` | `id` (task ID); records active time and transitions to `done` |
+| `task.reopen` | `id` (task ID); transitions a done task to `stopped` |
 | `entry.list` | `project` (`id` entry ID, `from` + `to`, pagination) |
 | `entry.add` | `id` task ID, `start`, either `end` or `seconds` (`note`, `pricing` for entry-scoped explicit pricing or historical inheritance) |
 | `entry.correct` | `id` entry ID, `revision`, signed `delta`, `reason` |
@@ -426,6 +428,13 @@ An entry's rate is captured when it is recorded using effective-dated rate histo
 Sessions spanning rate changes are split. A missing rate is non-billable; zero is
 a real billable rate. Later rate changes do not reprice recorded entries. Backdated
 entries use the history applicable to their timestamps.
+
+Tasks have three states: `stopped`, `tracking`, and `done`. New tasks are
+`stopped`; multiple tasks may be `tracking` concurrently. Completing a tracking
+task atomically records its active interval before setting `status: "done"` and
+`completedAt`. Done tasks reject `task.start` with `TASK_DONE`; they remain
+editable and accept manual historical entries. Use `task.reopen` before tracking
+again. Reopening clears `completedAt` and returns the task to `stopped`.
 
 For “yesterday, 20:00–23:00”, read `project.get` → `billing.timezone` and resolve
 both the date and endpoint offsets there. With local today fixed at September 19,

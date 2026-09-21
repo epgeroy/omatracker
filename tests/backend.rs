@@ -1,5 +1,7 @@
 use chrono::{Local, NaiveDate, TimeZone};
-use omatracker::{DEFAULT_PROJECT_ID, Entry, State, Task, last_completed_period, now_ms};
+use omatracker::{
+    DEFAULT_PROJECT_ID, Entry, State, Task, TaskStatus, last_completed_period, now_ms,
+};
 use serde_json::Value;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -192,7 +194,7 @@ fn rate_estimates_follow_running_time_and_reset_counters() {
     ledger.tasks.push(Task {
         id: "running".into(),
         project_id: DEFAULT_PROJECT_ID.into(),
-        running: true,
+        status: TaskStatus::Tracking,
         started_at: now_ms() - 2000,
         ..Task::default()
     });

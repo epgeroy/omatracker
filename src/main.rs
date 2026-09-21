@@ -1,10 +1,10 @@
 use anyhow::Result;
 use clap::{ArgAction, Args, Parser, Subcommand};
 use omatracker::{
-    ProjectChanges, add_task, check_reports, create_project, default_data_path, diagnostics,
-    edit_task, export_report, install_report_timer, presentation_status, remove_report_timer,
-    remove_task, reset_active_project, reset_task, retry_reports, select_project, start_task,
-    status, stop_task, sync_state, update_drive, update_project,
+    ProjectChanges, add_task, check_reports, complete_task, create_project, default_data_path,
+    diagnostics, edit_task, export_report, install_report_timer, presentation_status,
+    remove_report_timer, remove_task, reopen_task, reset_active_project, reset_task, retry_reports,
+    select_project, start_task, status, stop_task, sync_state, update_drive, update_project,
 };
 use std::path::PathBuf;
 
@@ -149,6 +149,12 @@ enum TaskCommand {
         id: String,
     },
     Stop {
+        id: String,
+    },
+    Complete {
+        id: String,
+    },
+    Reopen {
         id: String,
     },
     Reset {
@@ -303,6 +309,8 @@ fn main() -> Result<()> {
             TaskCommand::Add { title } => println!("{}", add_task(&data_path, Some(&title))?),
             TaskCommand::Start { id } => start_task(&data_path, &id)?,
             TaskCommand::Stop { id } => stop_task(&data_path, &id)?,
+            TaskCommand::Complete { id } => complete_task(&data_path, &id)?,
+            TaskCommand::Reopen { id } => reopen_task(&data_path, &id)?,
             TaskCommand::Reset { id } => reset_task(&data_path, &id)?,
             TaskCommand::ResetActiveProject => reset_active_project(&data_path)?,
             TaskCommand::Remove { id } => remove_task(&data_path, &id)?,

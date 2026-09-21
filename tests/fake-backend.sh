@@ -16,8 +16,10 @@ case "$1" in
     if [ -f "$work/uploading" ]; then status=uploading; fi
     if [ -f "$work/stopped" ]; then running=false; timers=0; fi
     if [ -f "$work/synced" ]; then status=synced; fi
-    printf '{"state":{"projects":[],"drive":{"syncOnStartup":false}},"activeTasks":[{"id":"tracked","running":%s,"displaySeconds":0}],"runningTimers":%s,"nowMs":%s,"syncStatus":"%s"}\n' \
-      "$running" "$timers" "$(date +%s000)" "$status"
+    task_status=stopped
+    if [ "$running" = true ]; then task_status=tracking; fi
+    printf '{"state":{"projects":[],"drive":{"syncOnStartup":false}},"activeTasks":[{"id":"tracked","status":"%s","displaySeconds":0}],"runningTimers":%s,"nowMs":%s,"syncStatus":"%s"}\n' \
+      "$task_status" "$timers" "$(date +%s000)" "$status"
     ;;
   sync)
     touch "$work/uploading"

@@ -40,6 +40,8 @@ pub const ACTIONS: &[&str] = &[
     "task.delete",
     "task.start",
     "task.stop",
+    "task.complete",
+    "task.reopen",
     "entry.list",
     "entry.add",
     "entry.correct",
@@ -251,7 +253,7 @@ fn range(state: &State, i: &Input, project: &str) -> Result<(i64, i64)> {
 pub(crate) fn read(action: &str, state: &State, i: &Input) -> Result<Value> {
     Ok(match action {
         "context" => {
-            json!({"projects": state.projects.iter().filter(|p| !state.billing.archived_projects.contains(&p.id)).collect::<Vec<_>>(), "runningTasks": state.tasks.iter().filter(|t| t.running).collect::<Vec<_>>(),
+            json!({"projects": state.projects.iter().filter(|p| !state.billing.archived_projects.contains(&p.id)).collect::<Vec<_>>(), "runningTasks": state.tasks.iter().filter(|t| t.is_tracking()).collect::<Vec<_>>(),
             "drafts": state.billing.invoices.iter().filter(|v| v.state == "draft").map(|v| json!({"id":v.id,"project":v.project_id,"total":v.total_text})).collect::<Vec<_>>(),
             "revision": state.billing.revision})
         }
@@ -286,7 +288,7 @@ pub(crate) fn read(action: &str, state: &State, i: &Input) -> Result<Value> {
                 &state
                     .tasks
                     .iter()
-                    .filter(|t| t.project_id == project && (!i.running || t.running))
+                    .filter(|t| t.project_id == project && (!i.running || t.is_tracking()))
                     .map(|t| crate::task_rates::task_json(state,t))
                     .collect::<Vec<_>>(),
                 i,
@@ -609,33 +611,46 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
             crate::entities::remove_task(state, &id)?;
             json!({"id":id,"removed":true})
         }
-        "task.start" | "task.stop" => {
+        "task.start" => {
             let id = required(&i.id, "id")?;
             let index = state
                 .tasks
                 .iter()
                 .position(|t| t.id == id)
                 .context("TASK_NOT_FOUND")?;
-            if action == "task.start" {
-                crate::entities::active_project(state, &state.tasks[index].project_id)?;
-            }
-            if action == "task.start" && !state.tasks[index].running {
-                state.tasks[index].running = true;
-                state.tasks[index].started_at = crate::now_ms();
-            } else if action == "task.stop" && state.tasks[index].running {
-                let task = state.tasks[index].clone();
-                let now = crate::now_ms();
-                crate::append_entry(
-                    state,
-                    &task,
-                    task.started_at,
-                    now,
-                    (now - task.started_at) / 1000,
-                    "",
-                );
-                state.tasks[index].running = false;
-                state.tasks[index].started_at = 0;
-            }
+            let project = state.tasks[index].project_id.clone();
+            crate::entities::active_project(state, &project)?;
+            crate::entities::start_task(state, index, crate::now_ms())?;
+            crate::task_rates::task_json(state, &state.tasks[index])
+        }
+        "task.stop" => {
+            let id = required(&i.id, "id")?;
+            let index = state
+                .tasks
+                .iter()
+                .position(|t| t.id == id)
+                .context("TASK_NOT_FOUND")?;
+            crate::entities::stop_task(state, index, crate::now_ms());
+            crate::task_rates::task_json(state, &state.tasks[index])
+        }
+        "task.complete" => {
+            let id = required(&i.id, "id")?;
+            let index = state
+                .tasks
+                .iter()
+                .position(|t| t.id == id)
+                .context("TASK_NOT_FOUND")?;
+            crate::entities::complete_task(state, index, crate::now_ms());
+            crate::task_rates::task_json(state, &state.tasks[index])
+        }
+        "task.reopen" => {
+            let id = required(&i.id, "id")?;
+            let index = state
+                .tasks
+                .iter()
+                .position(|t| t.id == id)
+                .context("TASK_NOT_FOUND")?;
+            crate::entities::reopen_task(state, index);
             crate::task_rates::task_json(state, &state.tasks[index])
         }
         "entry.add" => {
