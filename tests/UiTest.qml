@@ -107,9 +107,13 @@ FloatingWindow {
       var label = findChild(view, "cockpitReason-two")
       verify(label !== null)
       compare(label.text, "Recently tracked")
+      verify(label.visible)
+      verify(label.width > 0)
       label = findChild(view, "cockpitReason-three")
       verify(label !== null)
       compare(label.text, "New")
+      verify(label.visible)
+      verify(label.width > 0)
       keyClick(Qt.Key_J); keyClick(Qt.Key_J); keyClick(Qt.Key_Space)
       compare(fake.lastAction, "start:two")
     }

@@ -432,7 +432,7 @@ Item {
             text: taskRow.modelData.title; color: root.foreground
             wrapMode: Text.NoWrap; elide: Text.ElideRight
           }
-          Caption {
+          Text {
             id: curation
             objectName: "cockpitReason-" + taskRow.modelData.id
             readonly property string reason: String(taskRow.modelData.reason || "")
@@ -441,7 +441,7 @@ Item {
             visible: reason === "new" || reason === "recentlyTracked"
             text: reason === "new" ? "New" : "Recently tracked"
             color: root.secondary
-            font.pixelSize: Style.font.bodySmall
+            font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
           }
           Text {
             id: duration
