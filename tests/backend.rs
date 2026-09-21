@@ -381,6 +381,78 @@ fn compact_status_omits_history_and_never_launches_diagnostics() {
 }
 
 #[test]
+fn compact_status_adds_a_curated_work_cockpit_without_changing_active_tasks() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path();
+    let mut ledger = State {
+        tasks: vec![
+            Task {
+                id: "tracking-a".into(),
+                project_id: DEFAULT_PROJECT_ID.into(),
+                title: "Concurrent timer".into(),
+                status: TaskStatus::Tracking,
+                started_at: 1_000,
+                ..Task::default()
+            },
+            Task {
+                id: "tracking-b".into(),
+                project_id: DEFAULT_PROJECT_ID.into(),
+                title: "Second timer".into(),
+                status: TaskStatus::Tracking,
+                started_at: 1_000,
+                ..Task::default()
+            },
+            Task {
+                id: "done".into(),
+                project_id: DEFAULT_PROJECT_ID.into(),
+                title: "Completed".into(),
+                status: TaskStatus::Done,
+                completed_at: 1_000,
+                ..Task::default()
+            },
+        ],
+        ..State::default()
+    };
+    for number in 0..12 {
+        ledger.tasks.push(Task {
+            id: format!("stopped-{number:02}"),
+            project_id: DEFAULT_PROJECT_ID.into(),
+            title: format!("Stopped {number}"),
+            ..Task::default()
+        });
+    }
+    let mut value = serde_json::to_value(&ledger).unwrap();
+    let tasks = value["tasks"].as_array_mut().unwrap();
+    for (number, task) in tasks.iter_mut().skip(3).enumerate() {
+        task["createdAt"] = Value::from(100 + number as i64);
+    }
+    tasks[3]["lastTrackedAt"] = Value::from(1_000_i64); // stopped-00
+    tasks[4]["lastTrackedAt"] = Value::from(1_000_i64); // stopped-01: ID tie-break
+    fs::write(home.join("state.json"), serde_json::to_vec(&value).unwrap()).unwrap();
+
+    let compact: Value =
+        serde_json::from_str(&cli(home, &["status", "--json", "--compact"])).unwrap();
+    assert_eq!(compact["activeTasks"].as_array().unwrap().len(), 14);
+    let cockpit = compact["cockpitTasks"].as_array().unwrap();
+    assert_eq!(cockpit.len(), 12, "two timers plus ten stopped candidates");
+    assert_eq!(cockpit[0]["id"], "tracking-a");
+    assert_eq!(cockpit[0]["reason"], "tracking");
+    assert_eq!(cockpit[1]["id"], "tracking-b");
+    assert_eq!(cockpit[1]["reason"], "tracking");
+    assert_eq!(cockpit[2]["id"], "stopped-00");
+    assert_eq!(cockpit[2]["reason"], "recentlyTracked");
+    assert_eq!(cockpit[3]["id"], "stopped-01");
+    assert_eq!(cockpit[3]["reason"], "recentlyTracked");
+    assert_eq!(cockpit[4]["id"], "stopped-11");
+    assert_eq!(cockpit[4]["reason"], "new");
+    assert!(cockpit.iter().all(|task| task["id"] != "done"));
+
+    let full: Value = serde_json::from_str(&cli(home, &["status", "--json"])).unwrap();
+    assert_eq!(full["activeTasks"], compact["activeTasks"]);
+    assert_eq!(full["cockpitTasks"], compact["cockpitTasks"]);
+}
+
+#[test]
 fn report_checks_reach_recent_periods_and_find_late_entries() {
     let temporary = tempfile::tempdir().unwrap();
     let home = temporary.path();

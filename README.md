@@ -137,8 +137,9 @@ from pre-invoice ledgers needs an explicit historical-rate or
 non-billable decision before invoicing; old PDFs remain archived reports. Issued
 artifacts live in `<ledger>.invoices/`. Back up the ledger, invoice directory, and
 custom template library together.
-Version 5 adds task status and completion timestamps: older backends reject it instead of
-rewriting data they do not understand. Update the shared CLI/widget backend together.
+Version 6 adds Work cockpit timestamps alongside task status and completion timestamps:
+older backends reject it instead of rewriting data they do not understand. Update the
+shared CLI/widget backend together.
 
 ## Clear all user data
 
@@ -224,8 +225,9 @@ be included when publishing a plugin release.
 
 ## Focus-card interface
 
-The main view keeps the active timer, task list, project total and rate estimate
-in view. **Menu** (or `Ctrl+K`) opens searchable commands for project settings,
+The main view is a **Work cockpit**: it keeps every Tracking task and a small,
+curated set of New or Recently tracked Stopped tasks in view, rather than acting
+as the complete task catalogue. **Menu** (or `Ctrl+K`) opens searchable commands for project settings,
 invoices, PDF templates, running timers across projects, and preferences/Drive.
 
 - `j/k` or arrows navigate; `Space`/`Enter` activate the visible selection.

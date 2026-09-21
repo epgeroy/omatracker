@@ -62,6 +62,7 @@ pub(crate) fn stop_task(state: &mut State, index: usize, now: i64) -> bool {
     );
     state.tasks[index].status = TaskStatus::Stopped;
     state.tasks[index].started_at = 0;
+    state.tasks[index].last_tracked_at = now;
     true
 }
 

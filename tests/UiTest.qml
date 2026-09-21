@@ -15,6 +15,10 @@ FloatingWindow {
     property var activeTasks: [
       { id: "one", title: "Production ready", status: "tracking", displaySeconds: 608 },
       { id: "two", title: "Documentation", status: "stopped", displaySeconds: 120 }]
+    property var cockpitTasks: [
+      { id: "one", title: "Production ready", status: "tracking", reason: "tracking", displaySeconds: 608 },
+      { id: "two", title: "Documentation", status: "stopped", reason: "recentlyTracked", displaySeconds: 120 },
+      { id: "three", title: "Unstarted task", status: "stopped", reason: "new", displaySeconds: 0 }]
     property var completedTasks: []
     property var activeProject: ({ id: "p", name: "Test project", clientName: "Test client", companyName: "", exportWeekly: true, exportMonthly: false, templateId: "detailed", accentColor: "#476a89", paper: "a4", logoPath: "" })
     property var state: ({ projects: [activeProject], drive: { remote: "test", folder: "Tracker", syncOnStartup: false } })
@@ -93,6 +97,21 @@ FloatingWindow {
       keyClick(Qt.Key_J); compare(view.selectedId, "two")
       compare(view.heroTask.id, "one")
       keyClick(Qt.Key_Space); compare(fake.lastAction, "start:two")
+    }
+    function test_cockpit_labels_and_toggle_use_curated_tasks() {
+      compare(view.tasks.length, 3)
+      compare(view.tasks[1].reason, "recentlyTracked")
+      var list = findChild(view, "taskList")
+      verify(list !== null)
+      compare(list.count, 3)
+      var label = findChild(view, "cockpitReason-two")
+      verify(label !== null)
+      compare(label.text, "Recently tracked")
+      label = findChild(view, "cockpitReason-three")
+      verify(label !== null)
+      compare(label.text, "New")
+      keyClick(Qt.Key_J); keyClick(Qt.Key_J); keyClick(Qt.Key_Space)
+      compare(fake.lastAction, "start:two")
     }
     function test_mouse_then_keyboard_changes_focus_target() {
       mouseClick(findChild(view, "primaryAction"))
@@ -213,9 +232,12 @@ FloatingWindow {
     }
     function test_empty_state_primary_creates_task() {
       var tasks = fake.activeTasks
+      var cockpit = fake.cockpitTasks
       fake.activeTasks = []
+      fake.cockpitTasks = []
       keyClick(Qt.Key_Space); compare(view.page, "edit")
       fake.activeTasks = tasks
+      fake.cockpitTasks = cockpit
     }
     function test_popup_component_loads() {
       if (Quickshell.env("QT_QPA_PLATFORM") !== "wayland") { skip("Layer-shell integration runs with --wayland"); return }

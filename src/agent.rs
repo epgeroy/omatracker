@@ -565,6 +565,7 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
                 id: crate::make_id("task"),
                 project_id: project,
                 title: task_name(i)?,
+                created_at: crate::now_ms(),
                 ..Default::default()
             };
             state.tasks.push(task);
