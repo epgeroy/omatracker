@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The plugin loader clones the repository without building it, so the
+      # committed binary must match the version being published.
+      - name: Committed backend matches Cargo.toml
+        run: |
+          expected="omatracker $(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          actual="$(./bin/omatracker --version)"
+          test "$actual" = "$expected" || {
+            echo "bin/omatracker reports '$actual', expected '$expected'; run make backend" >&2
+            exit 1
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+      - uses: typst-community/setup-typst@v4
+      - run: make template-check
+      - run: make install-check
