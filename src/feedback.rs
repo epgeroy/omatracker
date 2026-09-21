@@ -150,32 +150,34 @@ mod tests {
 
     #[test]
     fn union_counts_overlap_once_and_excludes_manual_and_legacy_time() {
-        let mut state = State::default();
-        state.entries = vec![
-            Entry {
-                started_at: 1_000,
-                ended_at: 601_000,
-                ..Entry::default()
-            },
-            Entry {
-                started_at: 301_000,
-                ended_at: 901_000,
-                ..Entry::default()
-            },
-            Entry {
-                started_at: 901_000,
-                ended_at: 3_601_000,
-                note: "Manual entry".into(),
-                ..Entry::default()
-            },
-        ];
-        state.tasks = vec![Task {
-            running: true,
-            started_at: 1_201_000,
-            display_since: 1_501_000,
-            legacy_seconds: 9999,
-            ..Task::default()
-        }];
+        let mut state = State {
+            entries: vec![
+                Entry {
+                    started_at: 1_000,
+                    ended_at: 601_000,
+                    ..Entry::default()
+                },
+                Entry {
+                    started_at: 301_000,
+                    ended_at: 901_000,
+                    ..Entry::default()
+                },
+                Entry {
+                    started_at: 901_000,
+                    ended_at: 3_601_000,
+                    note: "Manual entry".into(),
+                    ..Entry::default()
+                },
+            ],
+            tasks: vec![Task {
+                running: true,
+                started_at: 1_201_000,
+                display_since: 1_501_000,
+                legacy_seconds: 9999,
+                ..Task::default()
+            }],
+            ..State::default()
+        };
         assert_eq!(tracked_millis(&state, 1_801_000), 1_500_000);
         // Closing a running interval (or deleting/resetting its task) preserves work.
         state.entries.push(Entry {

@@ -35,7 +35,7 @@ install-check: backend
 check:
 	cargo fmt --check
 	cargo test
-	cargo clippy -- -D warnings
+	cargo clippy --all-targets -- -D warnings
 	$(MAKE) template-check
 	omarchy plugin validate .
 	$(MAKE) qml-check
