@@ -38,6 +38,8 @@ pub const ACTIONS: &[&str] = &[
     "task.rate",
     "task.remove",
     "task.delete",
+    "task.archive",
+    "task.restore",
     "task.start",
     "task.stop",
     "entry.list",
@@ -251,7 +253,7 @@ fn range(state: &State, i: &Input, project: &str) -> Result<(i64, i64)> {
 pub(crate) fn read(action: &str, state: &State, i: &Input) -> Result<Value> {
     Ok(match action {
         "context" => {
-            json!({"projects": state.projects.iter().filter(|p| !state.billing.archived_projects.contains(&p.id)).collect::<Vec<_>>(), "runningTasks": state.tasks.iter().filter(|t| t.running).collect::<Vec<_>>(),
+            json!({"projects": state.projects.iter().filter(|p| !state.billing.archived_projects.contains(&p.id)).collect::<Vec<_>>(), "runningTasks": state.tasks.iter().filter(|t| t.running && !state.billing.archived_tasks.contains(&t.id)).collect::<Vec<_>>(),
             "drafts": state.billing.invoices.iter().filter(|v| v.state == "draft").map(|v| json!({"id":v.id,"project":v.project_id,"total":v.total_text})).collect::<Vec<_>>(),
             "revision": state.billing.revision})
         }
@@ -286,7 +288,12 @@ pub(crate) fn read(action: &str, state: &State, i: &Input) -> Result<Value> {
                 &state
                     .tasks
                     .iter()
-                    .filter(|t| t.project_id == project && (!i.running || t.running))
+                    .filter(|t| {
+                        t.project_id == project
+                            && (i.include_archived
+                                || !state.billing.archived_tasks.contains(&t.id))
+                            && (!i.running || t.running)
+                    })
                     .map(|t| crate::task_rates::task_json(state,t))
                     .collect::<Vec<_>>(),
                 i,
@@ -388,8 +395,8 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
             "client.set" | "client.update" | "client.remove" | "client.delete" => {
                 ("client", required(&i.id, "id")?)
             }
-            "task.update" | "task.rate" | "task.remove" | "task.delete" | "task.start"
-            | "task.stop" => ("task", required(&i.id, "id")?),
+            "task.update" | "task.rate" | "task.remove" | "task.delete" | "task.archive"
+            | "task.restore" | "task.start" | "task.stop" => ("task", required(&i.id, "id")?),
             _ => bail!(
                 "INVALID_INPUT: entityRevision is only supported for task/project/client edits"
             ),
@@ -417,6 +424,8 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
                 | "task.rate"
                 | "task.remove"
                 | "task.delete"
+                | "task.archive"
+                | "task.restore"
                 | "migration.resolve"
         )
         && expected != state.billing.revision
@@ -570,12 +579,7 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
         }
         "task.update" => {
             let id = required(&i.id, "id")?;
-            let index = state
-                .tasks
-                .iter()
-                .position(|t| t.id == id)
-                .context("TASK_NOT_FOUND")?;
-            crate::entities::active_project(state, &state.tasks[index].project_id)?;
+            let index = crate::entities::active_task(state, &id)?;
             let rate_change = i.rate.is_some() || i.no_rate || i.inherit_rate;
             if i.name.is_none() && i.title.is_none() && i.add.is_none() && !rate_change {
                 bail!("INVALID_INPUT: supply name/title, add, or a task rate setting")
@@ -603,22 +607,36 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
                 crate::task_rates::task_json(state, &state.tasks[index])
             }
         }
-        "task.rate" => crate::task_rates::assign(state, &required(&i.id, "id")?, i)?,
+        "task.rate" => {
+            let id = required(&i.id, "id")?;
+            crate::entities::active_task(state, &id)?;
+            crate::task_rates::assign(state, &id, i)?
+        }
         "task.remove" | "task.delete" => {
             let id = required(&i.id, "id")?;
             crate::entities::remove_task(state, &id)?;
             json!({"id":id,"removed":true})
         }
+        "task.archive" => {
+            let id = required(&i.id, "id")?;
+            let changed = crate::entities::archive_task(state, &id)?;
+            json!({"id":id,"archived":true,"changed":changed})
+        }
+        "task.restore" => {
+            let id = required(&i.id, "id")?;
+            let restored = crate::entities::restore_task(state, &id)?;
+            json!({"id":id,"archived":false,"restored":restored})
+        }
         "task.start" | "task.stop" => {
             let id = required(&i.id, "id")?;
+            if matches!(action, "task.start" | "task.stop") {
+                crate::entities::active_task(state, &id)?;
+            }
             let index = state
                 .tasks
                 .iter()
                 .position(|t| t.id == id)
                 .context("TASK_NOT_FOUND")?;
-            if action == "task.start" {
-                crate::entities::active_project(state, &state.tasks[index].project_id)?;
-            }
             if action == "task.start" && !state.tasks[index].running {
                 state.tasks[index].running = true;
                 state.tasks[index].started_at = crate::now_ms();
@@ -646,7 +664,7 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
                 .find(|t| Some(&t.id) == i.id.as_ref())
                 .cloned()
                 .context("TASK_NOT_FOUND: id must identify a task")?;
-            crate::entities::active_project(state, &task.project_id)?;
+            crate::entities::active_task(state, &task.id)?;
             let start = b::timestamp(&required(&i.start, "start")?)?;
             let end = if let Some(end) = &i.end {
                 b::timestamp(end)?

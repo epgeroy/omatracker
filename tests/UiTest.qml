@@ -18,6 +18,7 @@ FloatingWindow {
     property var activeProject: ({ id: "p", name: "Test project", clientName: "Test client", companyName: "", exportWeekly: true, exportMonthly: false, templateId: "detailed", accentColor: "#476a89", paper: "a4", logoPath: "" })
     property var state: ({ projects: [activeProject], drive: { remote: "test", folder: "Tracker", syncOnStartup: false } })
     property var runningTasks: [activeTasks[0]]
+    property var archivedTasks: [{id:"old",title:"Archived task",projectId:"p",displaySeconds:120}]
     property var preferences: ({ hourlyClick: true, volume: 25, reducedMotion: true })
     property bool loaded: true
     property int runningTimers: 1
@@ -50,6 +51,8 @@ FloatingWindow {
     function addTask(title) { lastAction = "add:" + title }
     function renameAndAddManualTime(id, title, time, rates) { lastAction = "edit:" + id + ":" + title + ":" + time; lastChanges = rates || {} }
     function removeTask(id) { lastAction = "remove:" + id }
+    function archiveTask(id) { lastAction = "archive:" + id }
+    function restoreTask(id) { lastAction = "restore:" + id }
     function resetTimer(id) { lastAction = "reset:" + id }
     function resetActiveProject() { lastAction = "reset-project" }
     function selectProject(id) { lastAction = "project:" + id }
@@ -168,8 +171,15 @@ FloatingWindow {
     }
     function test_delete_requires_explicit_confirmation() {
       keyClick(Qt.Key_D); wait(20)
-      compare(view.page, "confirm"); compare(fake.lastAction, "")
+      compare(view.page, "confirm"); compare(view.confirmAction, "delete"); compare(fake.lastAction, "")
       keyClick(Qt.Key_Return); compare(view.page, "home"); compare(fake.lastAction, "")
+    }
+    function test_archive_requires_explicit_confirmation_and_restore_is_available() {
+      keyClick(Qt.Key_L); keyClick(Qt.Key_L); keyClick(Qt.Key_L); keyClick(Qt.Key_L); keyClick(Qt.Key_Return)
+      compare(view.page, "confirm"); compare(fake.lastAction, "")
+      keyClick(Qt.Key_Tab); keyClick(Qt.Key_Return); compare(fake.lastAction, "archive:one"); fake.actionFinished("task-archive", true)
+      view.navigate("archived"); wait(20); keyClick(Qt.Key_Return)
+      compare(fake.lastAction, "restore:old"); fake.actionFinished("task-restore", true)
     }
     function test_all_pages_load() {
       var pages = ["projects", "project", "reports", "entries", "templates", "settings", "running", "commands", "new-project", "help"]

@@ -409,12 +409,14 @@ settings and the current rate, not tasks, entries, invoices, or rate history.
 
 | Action | Input |
 | --- | --- |
-| `task.list` | `project` (`running: true`, pagination) |
+| `task.list` | `project` (`running: true`, `includeArchived: true`, pagination) |
 | `task.get` | `id` |
 | `task.create` | `project`, `title` or `name` |
 | `task.update` | `id`, any of `name`/`title`, `add` duration, task-rate fields (`entityRevision`); one atomic edit |
 | `task.rate` | `id`, exactly one of `rate` + `currency`, `noRate: true`, or `inheritRate: true` (`effectiveAt`, `applyExisting`, `reason`, `entityRevision`) |
 | `task.remove` / `task.delete` | `id` (`entityRevision`); stop its timer, remove the task, retain dated entries |
+| `task.archive` | `id` (`entityRevision`); stop its timer and hide the task while retaining its identity and history |
+| `task.restore` | `id` (`entityRevision`); restore an archived task to active lists |
 | `task.start` / `task.stop` | `id` (task ID) |
 | `entry.list` | `project` (`id` entry ID, `from` + `to`, pagination) |
 | `entry.add` | `id` task ID, `start`, either `end` or `seconds` (`note`, `pricing` for entry-scoped explicit pricing or historical inheritance) |
@@ -546,6 +548,13 @@ client's other details. Existing drafts may require refresh before issuance.
 Task deletion records any running interval before removing the task. Dated entries
 and issued invoices remain; undated legacy counters follow the existing task-delete
 behavior and leave the active counter list with the task.
+
+Task archiving records any running interval, retains the task ID, settings, rates and
+dated entries, and hides the task from normal `task.list` responses and the widget.
+Use `includeArchived: true` with `task.list` to inspect archived tasks. Archived
+tasks cannot be started, edited, repriced, or used for new entries. `task.restore`
+returns an archived task to active lists; restoring is rejected when its project is
+archived.
 
 Project deletion is archival: it hides the project from active lists and the panel,
 stops its timers, disables scheduling, removes repository associations, and selects

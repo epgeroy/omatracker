@@ -229,6 +229,7 @@ pub struct PresentationStatus {
     pub now_ms: i64,
     pub active_project: Option<Project>,
     pub active_tasks: Vec<TaskView>,
+    pub archived_tasks: Vec<TaskView>,
     pub running_tasks: Vec<TaskView>,
     pub preferences: feedback::Preferences,
     pub total_tracked_seconds: i64,
@@ -513,6 +514,10 @@ fn normalize_state(state: &mut State) {
             task.started_at = 0;
         }
     }
+    state
+        .billing
+        .archived_tasks
+        .retain(|id| state.tasks.iter().any(|task| &task.id == id));
 
     state.entries.retain_mut(|entry| {
         if !project_ids.contains(&entry.project_id) {
@@ -831,7 +836,9 @@ fn task_totals(state: &State, now: i64) -> Vec<i64> {
     let mut task_indices: HashMap<&str, Vec<usize>> = HashMap::new();
     let mut totals = Vec::with_capacity(state.tasks.len());
     for (index, task) in state.tasks.iter().enumerate() {
-        if state.billing.archived_projects.contains(&task.project_id) {
+        if state.billing.archived_projects.contains(&task.project_id)
+            || state.billing.archived_tasks.contains(&task.id)
+        {
             totals.push(0);
             continue;
         }
@@ -1322,7 +1329,10 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
         .tasks
         .iter()
         .zip(&totals)
-        .filter(|(task, _)| task.project_id == state.active_project_id)
+        .filter(|(task, _)| {
+            task.project_id == state.active_project_id
+                && !state.billing.archived_tasks.contains(&task.id)
+        })
         .map(|(_, seconds)| seconds)
         .sum();
     let active_project = state
@@ -1334,7 +1344,10 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
         .tasks
         .iter()
         .zip(totals.iter().copied())
-        .filter(|(task, _)| task.project_id == state.active_project_id)
+        .filter(|(task, _)| {
+            task.project_id == state.active_project_id
+                && !state.billing.archived_tasks.contains(&task.id)
+        })
         .map(|(task, display_seconds)| TaskView {
             billing: task_rates::view(state, task, now),
             display_seconds,
@@ -1383,11 +1396,21 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
             .map(|rate| rate.estimate(active_project_seconds)),
         active_project,
         active_tasks,
+        archived_tasks: state
+            .tasks
+            .iter()
+            .filter(|task| state.billing.archived_tasks.contains(&task.id))
+            .map(|task| TaskView {
+                billing: task_rates::view(state, task, now),
+                display_seconds: task_seconds(state, task, now),
+                task: task.clone(),
+            })
+            .collect(),
         running_tasks: state
             .tasks
             .iter()
             .zip(totals)
-            .filter(|(task, _)| task.running)
+            .filter(|(task, _)| task.running && !state.billing.archived_tasks.contains(&task.id))
             .map(|(task, display_seconds)| TaskView {
                 billing: task_rates::view(state, task, now),
                 task: task.clone(),
@@ -1397,7 +1420,11 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
         preferences: feedback::Preferences::default(),
         total_tracked_seconds,
         active_project_seconds,
-        running_timers: state.tasks.iter().filter(|task| task.running).count(),
+        running_timers: state
+            .tasks
+            .iter()
+            .filter(|task| task.running && !state.billing.archived_tasks.contains(&task.id))
+            .count(),
         report_status: report_status_text(state),
         sync_status: state.sync.status.clone(),
         sync_error: state.sync.error.clone(),

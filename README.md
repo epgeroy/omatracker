@@ -109,7 +109,9 @@ end-to-end setup including branding and Google Drive testing.
 
 Rename tasks, projects, and clients with `agent task.update`, `agent project.update`,
 and `agent client.update` using a `name` field. Each also has `.remove` and `.delete`
-operations. Task deletion preserves dated time; projects and clients are archived
+operations. Tasks can be archived and restored with `agent task.archive` and
+`agent task.restore`; archiving hides a task while retaining its identity and history.
+Task deletion preserves dated time; projects and clients are archived
 to preserve billing history. See the [entity lifecycle reference](AGENT_API.md#renaming-and-deleting-entities)
 for examples and client reassignment rules.
 

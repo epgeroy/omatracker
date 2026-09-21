@@ -30,6 +30,7 @@ pub struct Billing {
     pub migration_log: Vec<Value>,
     pub archived_projects: BTreeSet<String>,
     pub archived_clients: BTreeSet<String>,
+    pub archived_tasks: BTreeSet<String>,
     pub task_rates: BTreeMap<String, Vec<crate::task_rates::RatePoint>>,
     pub task_rate_adjustments: Vec<crate::task_rates::Adjustment>,
 }

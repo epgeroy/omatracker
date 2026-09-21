@@ -23,6 +23,7 @@ Item {
   property var activeProjectEstimate: null
   property string projectUpdateError: ""
   property var activeTasks: []
+  property var archivedTasks: []
   property var runningTasks: []
   property var preferences: ({ hourlyClick: true, volume: 25, reducedMotion: false })
   property bool feedbackEnabled: true
@@ -239,6 +240,7 @@ Item {
       invoiceSettings = next.invoiceSettings || ({ cadence: "monthly", templateId: "invoice", timezone: "UTC" })
       invoiceStatus = next.invoiceStatus || "No invoices"
       activeTasks = Array.isArray(next.activeTasks) ? next.activeTasks : []
+      archivedTasks = Array.isArray(next.archivedTasks) ? next.archivedTasks : []
       runningTasks = Array.isArray(next.runningTasks) ? next.runningTasks : []
       preferences = next.preferences || ({ hourlyClick: true, volume: 25, reducedMotion: false })
       totalTrackedSeconds = Math.max(0, Math.floor(Number(next.totalTrackedSeconds) || 0))
@@ -354,6 +356,14 @@ Item {
 
   function removeTask(id) {
     enqueue("task-remove", ["task", "remove", id], {})
+  }
+
+  function archiveTask(id) {
+    enqueue("task-archive", ["agent", "task.archive", "--input", JSON.stringify({id: id})], {agent: true})
+  }
+
+  function restoreTask(id) {
+    enqueue("task-restore", ["agent", "task.restore", "--input", JSON.stringify({id: id})], {agent: true})
   }
 
   function renameAndAddManualTime(id, title, duration, rateOptions) {

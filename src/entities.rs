@@ -9,7 +9,8 @@ pub(crate) fn revision(state: &State, kind: &str, id: &str) -> Result<String> {
     let value = match kind {
         "task" => {
             json!({"task": state.tasks.iter().find(|t| t.id == id).context("TASK_NOT_FOUND")?,
-            "rates": state.billing.task_rates.get(id)})
+            "rates": state.billing.task_rates.get(id),
+            "archived": state.billing.archived_tasks.contains(id)})
         }
         "project" => {
             json!({"project": state.projects.iter().find(|p| p.id == id).context("PROJECT_NOT_FOUND")?,
@@ -32,6 +33,19 @@ pub(crate) fn active_project(state: &State, id: &str) -> Result<()> {
         bail!("PROJECT_ARCHIVED: {id}")
     }
     Ok(())
+}
+
+pub(crate) fn active_task(state: &State, id: &str) -> Result<usize> {
+    let index = state
+        .tasks
+        .iter()
+        .position(|task| task.id == id)
+        .context("TASK_NOT_FOUND")?;
+    if state.billing.archived_tasks.contains(id) {
+        bail!("TASK_ARCHIVED: {id}");
+    }
+    active_project(state, &state.tasks[index].project_id)?;
+    Ok(index)
 }
 
 fn finish_task(state: &mut State, index: usize, now: i64) {
@@ -58,7 +72,24 @@ pub(crate) fn remove_task(state: &mut State, id: &str) -> Result<Task> {
         .position(|t| t.id == id)
         .context("TASK_NOT_FOUND")?;
     finish_task(state, index, crate::now_ms());
+    state.billing.archived_tasks.remove(id);
     Ok(state.tasks.remove(index))
+}
+
+pub(crate) fn archive_task(state: &mut State, id: &str) -> Result<bool> {
+    let index = active_task(state, id)?;
+    finish_task(state, index, crate::now_ms());
+    Ok(state.billing.archived_tasks.insert(id.into()))
+}
+
+pub(crate) fn restore_task(state: &mut State, id: &str) -> Result<bool> {
+    let index = state
+        .tasks
+        .iter()
+        .position(|task| task.id == id)
+        .context("TASK_NOT_FOUND")?;
+    active_project(state, &state.tasks[index].project_id)?;
+    Ok(state.billing.archived_tasks.remove(id))
 }
 
 pub(crate) fn archive_project(state: &mut State, id: &str) -> Result<bool> {

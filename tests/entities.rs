@@ -243,6 +243,74 @@ fn task_delete_records_running_time_and_is_retry_safe() {
 }
 
 #[test]
+fn task_archive_hides_task_preserves_identity_and_can_be_restored() {
+    let app = App::new();
+    app.running();
+    let archived = app.call("task.archive", json!({"id":app.task}));
+    assert_eq!(archived["archived"], true);
+    assert_eq!(archived["changed"], true);
+
+    let state = app.state();
+    assert_eq!(state.tasks[0].id, app.task);
+    assert!(!state.tasks[0].running);
+    assert_eq!(state.entries.len(), 2);
+    assert_eq!(
+        app.call("task.list", json!({"project":app.project}))["total"],
+        0
+    );
+    assert_eq!(
+        app.call(
+            "task.list",
+            json!({"project":app.project,"includeArchived":true})
+        )["items"][0]["archived"],
+        true
+    );
+    assert_eq!(
+        app.call("task.get", json!({"id":app.task}))["archived"],
+        true
+    );
+    assert_eq!(
+        omatracker::presentation_status(&app.path)
+            .unwrap()
+            .active_tasks
+            .len(),
+        0
+    );
+    assert_eq!(app.call("context", json!({}))["runningTasks"], json!([]));
+    app.fail("task.start", json!({"id":app.task}), "TASK_ARCHIVED");
+    app.fail(
+        "task.update",
+        json!({"id":app.task,"name":"New"}),
+        "TASK_ARCHIVED",
+    );
+    app.fail(
+        "task.rate",
+        json!({"id":app.task,"rate":"90","currency":"USD"}),
+        "TASK_ARCHIVED",
+    );
+    app.fail(
+        "entry.add",
+        json!({"id":app.task,"start":"2025-08-11T10:00:00Z","seconds":60}),
+        "TASK_ARCHIVED",
+    );
+
+    let restored = app.call("task.restore", json!({"id":app.task}));
+    assert_eq!(restored["restored"], true);
+    assert_eq!(
+        app.call("task.get", json!({"id":app.task}))["archived"],
+        false
+    );
+    assert_eq!(
+        app.call("task.list", json!({"project":app.project}))["total"],
+        1
+    );
+    assert_eq!(
+        app.call("task.restore", json!({"id":app.task}))["restored"],
+        false
+    );
+}
+
+#[test]
 fn project_delete_archives_history_stops_timers_and_clears_active_bindings() {
     let app = App::new();
     app.running();

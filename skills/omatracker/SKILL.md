@@ -42,6 +42,8 @@ field contract; `agent help` lists actions when needed, not a mandatory first ca
 - **Rename/delete:** use `task.update`, `project.update`, or `client.update` with
   `name`; task IDs use `id`, project IDs use `project`, and client IDs use `id`.
   Use the corresponding `.remove` (or `.delete`) action when asked to delete.
+  Use `task.archive` and `task.restore` to hide or reactivate tasks without losing
+  their identity; `task.list` hides archived tasks unless `includeArchived: true`.
   Task removal retains dated entries; project/client removal archives history.
   Reassign or unlink clients used by active projects before removing them. Use
   `includeArchived: true` when searching project/client history. Use the target's

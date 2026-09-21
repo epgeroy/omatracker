@@ -40,7 +40,7 @@ Item {
     if (remembered && remembered.running) return remembered
     return tasks.find(function(t) { return t.running }) || remembered || tasks[0] || null
   }
-  readonly property bool picker: ["projects", "search", "commands", "running"].indexOf(page) >= 0
+  readonly property bool picker: ["projects", "search", "commands", "running", "archived"].indexOf(page) >= 0
   readonly property var commandItems: [
     { id: "new", title: "New task", hint: "n" },
     { id: "projects", title: "Switch project", hint: "p" },
@@ -50,20 +50,22 @@ Item {
     { id: "entries", title: "Time entries and corrections", hint: "" },
     { id: "templates", title: "PDF templates and appearance", hint: "" },
     { id: "settings", title: "Preferences and Google Drive", hint: "," },
-    { id: "running", title: "Running timers · all projects", hint: "" },
+     { id: "running", title: "Running timers · all projects", hint: "" },
+     { id: "archived", title: "Archived tasks", hint: "" },
     { id: "sync", title: "Sync to Google Drive", hint: "" },
     { id: "reset-project", title: "Reset visible project counters…", hint: "" },
     { id: "help", title: "Keyboard shortcuts", hint: "?" }
   ]
   readonly property var choices: {
     var source = page === "projects" ? tracker.state.projects || []
-      : page === "search" ? tasks : page === "running" ? tracker.runningTasks || [] : commandItems
+      : page === "search" ? tasks : page === "running" ? tracker.runningTasks || []
+      : page === "archived" ? tracker.archivedTasks || [] : commandItems
     var needle = query.trim().toLowerCase()
     return source.filter(function(item) { return String(item.name || item.title).toLowerCase().indexOf(needle) >= 0 })
   }
   readonly property string pageTitle: ({ projects: "Projects", project: "Project settings",
     reports: "Invoices", entries: "Time entries", templates: "PDF templates & appearance", settings: "Preferences & Drive", search: "Find a task", commands: "Commands",
-    running: "Running · all projects", edit: draftTask ? "Edit task" : "New task",
+    running: "Running · all projects", archived: "Archived tasks", edit: draftTask ? "Edit task" : "New task",
     "new-project": "New project", confirm: "Confirm action", help: "Keyboard shortcuts" })[page] || "OmaTracker"
   implicitHeight: Math.min(Style.space(570), content.implicitHeight)
 
@@ -113,6 +115,8 @@ Item {
     else if (page === "running") {
       tracker.selectProject(item.projectId); heroId = item.id; selectedId = item.id
       page = "home"; history = []; heroFocused = true; forceActiveFocus()
+    } else if (page === "archived") {
+      pendingAction = "task-restore"; tracker.restoreTask(item.id)
     } else runCommand(item.id)
   }
   function revealSelection() { if (body.item && body.item.revealSelection) body.item.revealSelection() }
@@ -130,6 +134,7 @@ Item {
     if (index === 0) toggleTask(task)
     else if (index === 1) editTask(task)
     else if (index === 2) confirm("reset", task.id, "Reset “" + task.title + "”?")
+    else if (index === 3) confirm("archive", task.id, "Archive “" + task.title + "”?")
     else confirm("delete", task.id, "Delete “" + task.title + "”?")
   }
 
@@ -146,7 +151,7 @@ Item {
       else if (heroFocused && !heroTask) newTask()
       else toggleTask(heroFocused ? heroTask : selectedTask)
     } else if (!picker && (event.key === Qt.Key_Right || event.text === "l")) {
-      actionIndex = actionsVisible ? Math.min(3, actionIndex + 1) : 0; actionsVisible = true
+      actionIndex = actionsVisible ? Math.min(4, actionIndex + 1) : 0; actionsVisible = true
     }
     else if (!picker && (event.key === Qt.Key_Left || event.text === "h")) { if (actionIndex === 0) actionsVisible = false; else actionIndex-- }
     else if (!picker && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) switchPanelRequested(event.modifiers & Qt.ShiftModifier ? -1 : 1)
@@ -156,7 +161,7 @@ Item {
     else if (!picker && event.text === "/") navigate("search")
     else if (!picker && event.text === ",") navigate("settings")
     else if (!picker && event.text === "?") navigate("help")
-    else if (!picker && (event.text === "d" || event.text === "x")) rowAction(3)
+    else if (!picker && (event.text === "d" || event.text === "x")) rowAction(4)
     else if (!picker && event.text === "r") rowAction(2)
     else return
     event.accepted = true
@@ -167,7 +172,11 @@ Item {
     function onActionFinished(action, success) {
       if (root.pendingAction === action) {
         root.pendingAction = ""
-        if (success) { root.back(); root.toast("✓ Saved") }
+        if (success) {
+          if (action === "task-restore") {
+            root.page = "home"; root.history = []; root.heroId = ""; root.selectedId = ""; root.heroFocused = true; root.forceActiveFocus()
+          } else { root.back(); root.toast("✓ Saved") }
+        } else root.toast("Could not save")
       }
     }
     function onHourReached(hours) { if (root.panelOpen) root.toast(hours + (hours === 1 ? " hour tracked" : " hours tracked")) }
@@ -460,7 +469,7 @@ Item {
           Flow {
             width: parent.width; spacing: Style.space(4)
             Repeater {
-              model: ["Start / pause", "Edit", "Reset…", "Delete…"]
+               model: ["Start / pause", "Edit", "Reset…", "Archive…", "Delete…"]
               Action {
                 required property string modelData
                 required property int index
@@ -734,13 +743,15 @@ Item {
       spacing: Style.space(12)
       function focusInitial() { cancel.forceActiveFocus() }
       Caption { text: root.confirmTitle; font.pixelSize: Style.font.heading; color: root.foreground }
-      Caption { text: root.confirmAction === "delete" ? "The task leaves your list. Its recorded time remains in the report ledger."
-        : "Visible counters start again at zero. Recorded time remains in reports; running timers keep running." }
+       Caption { text: root.confirmAction === "delete" ? "The task leaves your list. Its recorded time remains in the report ledger."
+         : root.confirmAction === "archive" ? "The task leaves your active list. Its task and recorded history remain available for restoration."
+         : "Visible counters start again at zero. Recorded time remains in reports; running timers keep running." }
       Action { id: cancel; text: "Cancel"; bordered: true; onClicked: root.back() }
       Action {
-        text: root.confirmAction === "delete" ? "Delete task" : "Reset counters"; foreground: Color.urgent
+         text: root.confirmAction === "delete" ? "Delete task" : root.confirmAction === "archive" ? "Archive task" : "Reset counters"; foreground: Color.urgent
         onClicked: {
-          if (root.confirmAction === "delete") { root.pendingAction = "task-remove"; root.tracker.removeTask(root.confirmId) }
+           if (root.confirmAction === "delete") { root.pendingAction = "task-remove"; root.tracker.removeTask(root.confirmId) }
+           else if (root.confirmAction === "archive") { root.pendingAction = "task-archive"; root.tracker.archiveTask(root.confirmId) }
           else if (root.confirmAction === "reset") { root.pendingAction = "task-reset"; root.tracker.resetTimer(root.confirmId) }
           else { root.pendingAction = "task-reset-project"; root.tracker.resetActiveProject() }
         }

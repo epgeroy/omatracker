@@ -75,6 +75,7 @@ pub(crate) fn view(state: &State, task: &Task, now: i64) -> View {
 
 pub(crate) fn task_json(state: &State, task: &Task) -> Value {
     let mut result = json!(task);
+    result["archived"] = json!(state.billing.archived_tasks.contains(&task.id));
     result.as_object_mut().unwrap().extend(
         serde_json::to_value(view(state, task, crate::now_ms()))
             .unwrap()
