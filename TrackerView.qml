@@ -27,7 +27,7 @@ Item {
   property string pendingAction: ""
   property string notice: ""
   property real savedScroll: 0
-  readonly property var tasks: tracker.activeTasks || []
+  readonly property var tasks: tracker.cockpitTasks || tracker.activeTasks || []
   readonly property var completedTasks: tracker.completedTasks || []
   readonly property var project: tracker.activeProject
   readonly property var preferences: tracker.preferences
@@ -388,7 +388,7 @@ Item {
       }
       Row {
         width: parent.width
-        Caption { width: parent.width - add.width; anchors.verticalCenter: parent.verticalCenter; text: "TASKS" }
+        Caption { width: parent.width - add.width; anchors.verticalCenter: parent.verticalCenter; text: "WORK" }
         Action { id: add; text: "+ New"; onClicked: root.newTask() }
       }
       ListView {
@@ -409,7 +409,7 @@ Item {
           foreground: root.foreground
           hasCursor: !root.heroFocused && root.selectedId === modelData.id && !root.actionsVisible && root.activeFocus
           Accessible.role: Accessible.ListItem
-            Accessible.name: modelData.title + (modelData.status === "tracking" ? ", tracking, " : ", stopped, ") + duration.text
+            Accessible.name: modelData.title + (modelData.status === "tracking" ? ", tracking, " : ", " + curation.text.toLowerCase() + ", stopped, ") + duration.text
           MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
@@ -427,10 +427,21 @@ Item {
           }
           Caption {
             anchors.left: marker.right; anchors.leftMargin: Style.space(8)
-            anchors.right: duration.left; anchors.rightMargin: Style.space(8)
+            anchors.right: curation.visible ? curation.left : duration.left; anchors.rightMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
             text: taskRow.modelData.title; color: root.foreground
             wrapMode: Text.NoWrap; elide: Text.ElideRight
+          }
+          Text {
+            id: curation
+            objectName: "cockpitReason-" + taskRow.modelData.id
+            readonly property string reason: String(taskRow.modelData.reason || "")
+            anchors.right: duration.left; anchors.rightMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            visible: reason === "new" || reason === "recentlyTracked"
+            text: reason === "new" ? "New" : "Recently tracked"
+            color: root.secondary
+            font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
           }
           Text {
             id: duration

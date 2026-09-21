@@ -23,6 +23,7 @@ Item {
   property var activeProjectEstimate: null
   property string projectUpdateError: ""
   property var activeTasks: []
+  property var cockpitTasks: []
   property var completedTasks: []
   property var runningTasks: []
   property var preferences: ({ hourlyClick: true, volume: 25, reducedMotion: false })
@@ -240,6 +241,7 @@ Item {
       invoiceSettings = next.invoiceSettings || ({ cadence: "monthly", templateId: "invoice", timezone: "UTC" })
       invoiceStatus = next.invoiceStatus || "No invoices"
       activeTasks = Array.isArray(next.activeTasks) ? next.activeTasks : []
+      cockpitTasks = Array.isArray(next.cockpitTasks) ? next.cockpitTasks : activeTasks
       completedTasks = Array.isArray(next.completedTasks) ? next.completedTasks : []
       runningTasks = Array.isArray(next.runningTasks) ? next.runningTasks : []
       preferences = next.preferences || ({ hourlyClick: true, volume: 25, reducedMotion: false })

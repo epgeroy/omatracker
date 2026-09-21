@@ -26,6 +26,8 @@ fn task_lifecycle_records_time_blocks_done_trackers_and_can_reopen() {
     let id = task["id"].as_str().unwrap();
     assert_eq!(task["status"], "stopped");
     assert_eq!(task["completedAt"], 0);
+    assert!(task["createdAt"].as_i64().unwrap() > 0);
+    assert_eq!(task["lastTrackedAt"], 0);
 
     call(&path, "task.start", json!({"id":id}));
     let concurrent = call(
@@ -42,6 +44,7 @@ fn task_lifecycle_records_time_blocks_done_trackers_and_can_reopen() {
     let done = call(&path, "task.complete", json!({"id":id}));
     assert_eq!(done["status"], "done");
     assert!(done["completedAt"].as_i64().unwrap() > 0);
+    assert!(done["lastTrackedAt"].as_i64().unwrap() > 0);
     assert_eq!(done["startedAt"], 0);
     assert!(
         parse_state(&fs::read_to_string(&path).unwrap())

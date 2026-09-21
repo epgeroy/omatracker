@@ -24,7 +24,7 @@ pub mod templates;
 mod workflows;
 pub use rates::{Estimate, HourlyRate};
 
-pub const STATE_VERSION: u32 = 5;
+pub const STATE_VERSION: u32 = 6;
 pub const DEFAULT_PROJECT_ID: &str = "project-unassigned";
 
 fn default_drive_folder() -> String {
@@ -75,6 +75,12 @@ pub struct Task {
     pub legacy_seconds: i64,
     pub status: TaskStatus,
     pub completed_at: i64,
+    /// Zero means an older ledger did not record a creation time; migration must
+    /// not promote it by inventing the current time.
+    pub created_at: i64,
+    /// The end of the most recent live Tracking interval, distinct from manual
+    /// time and other task changes.
+    pub last_tracked_at: i64,
     /// Read only when loading ledgers written before task statuses existed.
     #[serde(skip_serializing)]
     pub running: bool,
@@ -209,6 +215,22 @@ pub struct TaskView {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub enum CockpitReason {
+    Tracking,
+    New,
+    RecentlyTracked,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CockpitTaskView {
+    #[serde(flatten)]
+    pub view: TaskView,
+    pub reason: CockpitReason,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DependencyStatus {
     pub typst_available: bool,
     pub rclone_available: bool,
@@ -222,6 +244,7 @@ pub struct Status {
     pub now_ms: i64,
     pub active_project: Option<Project>,
     pub active_tasks: Vec<TaskView>,
+    pub cockpit_tasks: Vec<CockpitTaskView>,
     pub total_tracked_seconds: i64,
     pub active_project_seconds: i64,
     pub active_project_estimate: Option<Estimate>,
@@ -252,6 +275,7 @@ pub struct PresentationStatus {
     pub now_ms: i64,
     pub active_project: Option<Project>,
     pub active_tasks: Vec<TaskView>,
+    pub cockpit_tasks: Vec<CockpitTaskView>,
     pub completed_tasks: Vec<TaskView>,
     pub running_tasks: Vec<TaskView>,
     pub preferences: feedback::Preferences,
@@ -533,6 +557,8 @@ fn normalize_state(state: &mut State) {
         task.started_at = task.started_at.max(0);
         task.display_since = task.display_since.max(0);
         task.completed_at = task.completed_at.max(0);
+        task.created_at = task.created_at.max(0);
+        task.last_tracked_at = task.last_tracked_at.max(0);
         task.status = match task.status {
             TaskStatus::Done => TaskStatus::Done,
             TaskStatus::Tracking if task.started_at > 0 => TaskStatus::Tracking,
@@ -683,6 +709,8 @@ fn migrate_legacy(value: Value) -> State {
                 TaskStatus::Stopped
             },
             completed_at: 0,
+            created_at: 0,
+            last_tracked_at: 0,
             running,
             started_at: if running { started_at } else { 0 },
             display_since: 0,
@@ -1136,6 +1164,8 @@ pub fn add_task(path: &Path, title: Option<&str>) -> Result<String> {
             legacy_seconds: 0,
             status: TaskStatus::Stopped,
             completed_at: 0,
+            created_at: now_ms(),
+            last_tracked_at: 0,
             running: false,
             started_at: 0,
             display_since: 0,
@@ -1359,6 +1389,7 @@ pub fn status(path: &Path) -> Result<Status> {
         now_ms: presentation.now_ms,
         active_project: presentation.active_project,
         active_tasks: presentation.active_tasks,
+        cockpit_tasks: presentation.cockpit_tasks,
         setup_status: diagnostics.setup_status,
         dependencies: diagnostics.dependencies,
     })
@@ -1398,6 +1429,44 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
             task: task.clone(),
         })
         .collect();
+    let mut cockpit_tasks: Vec<_> = state
+        .tasks
+        .iter()
+        .zip(totals.iter().copied())
+        .filter(|(task, _)| task.project_id == state.active_project_id && task.is_tracking())
+        .map(|(task, display_seconds)| CockpitTaskView {
+            view: TaskView {
+                billing: task_rates::view(state, task, now),
+                display_seconds,
+                task: task.clone(),
+            },
+            reason: CockpitReason::Tracking,
+        })
+        .collect();
+    let mut stopped_candidates: Vec<_> = state
+        .tasks
+        .iter()
+        .zip(totals.iter().copied())
+        .filter(|(task, _)| {
+            task.project_id == state.active_project_id && task.status == TaskStatus::Stopped
+        })
+        .map(|(task, display_seconds)| CockpitTaskView {
+            view: TaskView {
+                billing: task_rates::view(state, task, now),
+                display_seconds,
+                task: task.clone(),
+            },
+            reason: cockpit_reason(task),
+        })
+        .collect();
+    stopped_candidates.sort_by(|left, right| {
+        let left_recency = cockpit_recency(&left.view.task);
+        let right_recency = cockpit_recency(&right.view.task);
+        right_recency
+            .cmp(&left_recency)
+            .then_with(|| left.view.task.id.cmp(&right.view.task.id))
+    });
+    cockpit_tasks.extend(stopped_candidates.into_iter().take(10));
     let mut completed_tasks: Vec<_> = state
         .tasks
         .iter()
@@ -1452,6 +1521,7 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
             .map(|rate| rate.estimate(active_project_seconds)),
         active_project,
         active_tasks,
+        cockpit_tasks,
         completed_tasks,
         running_tasks: state
             .tasks
@@ -1471,6 +1541,24 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
         report_status: report_status_text(state),
         sync_status: state.sync.status.clone(),
         sync_error: state.sync.error.clone(),
+    }
+}
+
+/// Cockpit recency is creation time until a live Tracking interval has ended,
+/// then the end of that interval. Zero remains an honestly unknown legacy value.
+pub(crate) fn cockpit_recency(task: &Task) -> i64 {
+    if task.last_tracked_at > 0 {
+        task.last_tracked_at
+    } else {
+        task.created_at
+    }
+}
+
+fn cockpit_reason(task: &Task) -> CockpitReason {
+    if task.last_tracked_at > 0 {
+        CockpitReason::RecentlyTracked
+    } else {
+        CockpitReason::New
     }
 }
 
@@ -2397,6 +2485,8 @@ mod tests {
             legacy_seconds: 120,
             status: TaskStatus::Stopped,
             completed_at: 0,
+            created_at: 0,
+            last_tracked_at: 0,
             running: false,
             started_at: 0,
             display_since: day + 60 * 1000,
