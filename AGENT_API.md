@@ -874,6 +874,16 @@ status polling after temporary lock timeouts and picks up the resulting empty st
 
 ### Migration and storage
 
+Versioned local recovery is available with `omatracker backup create`,
+`backup list`, `backup verify PATH`, and `backup restore PATH --dry-run` /
+`backup restore PATH`. Each restore takes a recovery snapshot first. The
+`omatracker-upgrade` skill drives `upgrade` (latest published release),
+`upgrade --tag TAG`, `upgrade --edge` (pinned `main` commit), and interrupted
+`upgrade --recover BACKUP`. Snapshots are under `<ledger>.backups/`; the upgrade
+journal is `<backup>/upgrade.json`. A revision conflict stops automatic rollback
+to preserve any new writes. Drive contents are not restored by this local
+feature. Referenced logos under HOME are included; others stop backup with an error.
+
 | Action | Input |
 | --- | --- |
 | `migration.preview` | `{}`; no ledger mutation |

@@ -47,6 +47,17 @@ pub enum SkillCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Install/update the bundled backup and upgrade skill.
+    InstallUpgrade {
+        #[arg(long, value_enum, value_delimiter = ',', default_value = "shared")]
+        harness: Vec<Harness>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove a user-level skill installation (leaves the CLI and ledger intact).
     #[command(visible_alias = "uninstall")]
     Remove {
@@ -120,6 +131,10 @@ fn destination(harness: Harness) -> Result<PathBuf> {
     Ok(base.join("skills/omatracker"))
 }
 
+fn upgrade_destination(harness: Harness) -> Result<PathBuf> {
+    Ok(destination(harness)?.with_file_name("omatracker-upgrade"))
+}
+
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -173,6 +188,44 @@ fn bundle() -> Result<BTreeMap<String, Vec<u8>>> {
     ]
     .into_iter()
     .map(|(name, text)| (name.to_owned(), text.as_bytes().to_vec()))
+    .collect();
+    let manifest = Manifest {
+        owner: OWNER.into(),
+        format_version: 1,
+        version: env!("CARGO_PKG_VERSION").into(),
+        executable,
+        files: files
+            .iter()
+            .map(|(name, bytes)| (name.clone(), digest(bytes)))
+            .collect(),
+    };
+    files.insert(MANIFEST.into(), serde_json::to_vec_pretty(&manifest)?);
+    Ok(files)
+}
+
+fn upgrade_bundle() -> Result<BTreeMap<String, Vec<u8>>> {
+    let executable = std::env::current_exe()?.canonicalize()?;
+    let command = executable
+        .to_str()
+        .context("executable path is not UTF-8")?;
+    let installation = format!(
+        "# Local installation\n\nInstalled by OmaTracker {}. Use the exact executable:\n\n```sh\n'{}' backup list\n```\n\nPass `--data-path /absolute/path/ledger.json` before `backup` or `upgrade` when a ledger is specified.\n",
+        env!("CARGO_PKG_VERSION"),
+        command.replace('\'', "'\"'\"'")
+    );
+    let mut files: BTreeMap<String, Vec<u8>> = [
+        (
+            "SKILL.md",
+            include_str!("../skills/omatracker-upgrade/SKILL.md"),
+        ),
+        ("references/installation.md", installation.as_str()),
+        (
+            "references/upgrade.md",
+            include_str!("../skills/omatracker-upgrade/references/upgrade.md"),
+        ),
+    ]
+    .into_iter()
+    .map(|(path, text)| (path.into(), text.as_bytes().to_vec()))
     .collect();
     let manifest = Manifest {
         owner: OWNER.into(),
@@ -445,6 +498,37 @@ fn execute(command: &SkillCommand) -> Result<Value> {
                 "nextStep":"Quit and restart OpenCode; restart/reload skills in other harnesses to discover OmaTracker."}),
             )
         }
+        SkillCommand::InstallUpgrade {
+            harness,
+            dry_run,
+            force,
+            ..
+        } => {
+            let files = upgrade_bundle()?;
+            let mut plans: Vec<Installation> = Vec::new();
+            for &harness in harness {
+                let path = upgrade_destination(harness)?;
+                if let Some(plan) = plans.iter_mut().find(|p| p.path == path) {
+                    plan.harnesses.push(harness);
+                } else {
+                    plans.push(Installation {
+                        harnesses: vec![harness],
+                        action: action(&path, &files, *force)?,
+                        path,
+                        backup: None,
+                    });
+                }
+            }
+            if !dry_run {
+                for plan in &mut plans {
+                    install(plan, &files, *force)?;
+                }
+            }
+            Ok(
+                json!({"schemaVersion":1,"ok":true,"scope":"user","dryRun":dry_run,"installations":plans,
+                "nextStep":"Quit and restart OpenCode; restart/reload skills to discover omatracker-upgrade."}),
+            )
+        }
     }
 }
 
@@ -452,6 +536,7 @@ pub fn run(command: &SkillCommand) -> Result<()> {
     let as_json = match command {
         SkillCommand::Targets { json }
         | SkillCommand::Install { json, .. }
+        | SkillCommand::InstallUpgrade { json, .. }
         | SkillCommand::Remove { json, .. } => *json,
     };
     let value = match execute(command) {

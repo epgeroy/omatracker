@@ -429,6 +429,7 @@ pub(crate) fn mutate(action: &str, state: &mut State, path: &Path, i: &Input) ->
                 | "task.remove"
                 | "task.delete"
                 | "migration.resolve"
+                | "migration.apply"
         )
         && expected != state.billing.revision
     {

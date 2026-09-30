@@ -25,6 +25,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Create, inspect, verify or restore a local snapshot.
+    Backup {
+        #[command(subcommand)]
+        command: omatracker::backup::BackupCommand,
+    },
+    /// Upgrade CLI, widget and skills from a tagged release (or --edge).
+    Upgrade(omatracker::upgrade::Upgrade),
     /// Preview or clear all user tracking/billing data.
     Data {
         #[command(subcommand)]
@@ -245,6 +252,8 @@ fn main() -> Result<()> {
     }
     let data_path = cli.data_path.unwrap_or(default_data_path()?);
     match cli.command {
+        Commands::Backup { command } => omatracker::backup::run(&data_path, command)?,
+        Commands::Upgrade(args) => omatracker::upgrade::run(&data_path, args)?,
         Commands::Data { command } => omatracker::clear_data::run(&data_path, command)?,
         Commands::Skill { .. } => {
             unreachable!("skill commands are handled before ledger resolution")

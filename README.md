@@ -24,6 +24,7 @@ Install the CLI from this repository first:
 ```sh
 make install
 omatracker skill install --harness opencode
+omatracker skill install-upgrade --harness opencode
 ```
 
 `make install` builds and installs for the current user, without sudo. The command
@@ -33,6 +34,35 @@ your `PATH`. Prebuilt release users can run `make install-bin` without Rust.
 Rerun the installation target after updating OmaTracker, and rerun `skill install`
 to refresh global skill documentation. `BINDIR` and `DATADIR` can override the
 installation directories.
+
+### Versioned backups and upgrades
+
+`omatracker backup create` makes a private local snapshot under
+`<ledger>.backups/backup-<id>/`. Use `backup list`, `backup verify PATH`, and
+`backup restore PATH --dry-run` before `backup restore PATH`. Restore first
+saves the current state as a new recovery snapshot. Backups include the ledger,
+feedback, invoice bundles, workflow journals, migration copies, report cache,
+user templates/assets, standalone CLI,
+bundled templates, widget runtime, managed skills, and referenced logos under
+HOME. A logo elsewhere blocks backup until moved or backed up separately. Drive
+is not included. Protect snapshots like the ledger.
+
+`omatracker upgrade` uses the latest tagged GitHub release, or `--tag vX.Y.Z`
+for a specific one. `omatracker upgrade --edge` builds the pinned `main` commit.
+Use `--dry-run` to inspect the candidate before installation. The upgrade saves
+and verifies a backup, installs CLI/widget/skills, checks the ledger, and reports
+the snapshot path. On an interruption, inspect `<backup>/upgrade.json` and run
+`omatracker upgrade --recover <backup>` if its recorded ledger revision still
+matches; newer work blocks automatic rollback. The standalone
+`omatracker-upgrade` skill documents the sequence. Tagged releases require
+`gh` and Git, edge builds also require Cargo. The upgrade acts on your installed
+user-level files, not the source checkout.
+It requires an installed standalone binary and refuses to overwrite an installed
+plugin Git checkout with uncommitted local changes.
+To publish the default upgrade source, update `Cargo.toml` and `manifest.json`
+to the same version, run CI, then push a matching `vX.Y.Z` tag. The release
+workflow builds the CLI and publishes its SHA-256 file; until the first tag is
+published, select `--edge` or a prebuilt local checkout.
 
 If you use the Omarchy widget too, deploy both from this checkout:
 
@@ -78,6 +108,8 @@ Install [the OmaTracker skill](skills/omatracker/SKILL.md) globally for your har
 ```sh
 omatracker skill install --harness opencode
 omatracker skill install --harness claude,codex
+omatracker skill install-upgrade --harness opencode
+omatracker skill install-upgrade --harness claude,codex
 omatracker skill targets
 ```
 

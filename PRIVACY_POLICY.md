@@ -18,6 +18,12 @@ By default, this data is stored in
 in `<ledger>.invoices/`. Legacy report inputs and PDFs use
 `~/.cache/omarchy/omatracker/`. Explicit clear-all backups use `<ledger>.backups/`.
 
+Versioned backups under `<ledger>.backups/` also contain local tracking and billing
+data, PDF documents, templates, preferences, and installed runtime files. They
+remain local unless you move them; Drive synchronization is separate and does not
+upload these backup directories. Protect and delete old snapshots as you would
+the active ledger.
+
 ## Information the plugin does not collect
 
 OmaTracker does not operate a server and does not collect analytics, telemetry,

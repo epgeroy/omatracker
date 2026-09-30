@@ -10,6 +10,7 @@ root = Path(__file__).resolve().parents[1]
 source_docs = [root / path for path in [
     "README.md", "AGENT_API.md", "TEMPLATES.md", "skills/omatracker/SKILL.md",
     "skills/omatracker/references/workflows.md", "tests/manual-invoices.md",
+    "skills/omatracker-upgrade/SKILL.md", "skills/omatracker-upgrade/references/upgrade.md",
 ]]
 source_links = check_links(source_docs, root)
 with tempfile.TemporaryDirectory(prefix="omatracker-install-") as temporary:
@@ -40,6 +41,10 @@ with tempfile.TemporaryDirectory(prefix="omatracker-install-") as temporary:
     assert "work.record-batch" in (skill / "AGENT_API.md").read_text()
     assert "work.record-batch" in (skill / "references" / "workflows.md").read_text()
     assert "work.record-batch" in json.loads(cli("agent", "help"))["data"]["actions"]
+    upgraded_skill = json.loads(cli("skill", "install-upgrade", "--harness", "codex", "--json"))
+    upgrade_path = Path(upgraded_skill["installations"][0]["path"])
+    assert (upgrade_path / "SKILL.md").is_file()
+    assert "--edge" in (upgrade_path / "references/upgrade.md").read_text()
     installed_links = check_links(list(skill.rglob("*.md")), skill)
     print(f"Validated {source_links} source and {installed_links} installed documentation links")
     assert not (work / "ledger.json").exists()

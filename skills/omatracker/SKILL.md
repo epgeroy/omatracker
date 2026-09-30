@@ -85,6 +85,9 @@ field contract; `agent help` lists actions when needed, not a mandatory first ca
   Unassigned workspace is internal, not a permission restriction; report zero user
   projects separately from the empty system workspace. Report the backup path and
   any partial failures. Do not automatically retry a clear after a lost response.
+- **Backup, restore or upgrade:** load the `omatracker-upgrade` skill. Its CLI workflow
+  backs up local records and installed runtime before publishing a new version.
+  Install it with `skill install-upgrade --harness opencode` for OpenCode.
 
 ## Preview intent and evidence
 

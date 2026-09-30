@@ -23,6 +23,10 @@ configure a remote and request or enable synchronization. You are responsible
 for maintaining backups and reviewing the configured remote and destination
 before uploading data.
 
+The optional local backup and upgrade commands create private, versioned snapshots
+of managed OmaTracker files and referenced logos under the user's home directory.
+Remote Drive data is outside their restore scope.
+
 ## No warranty
 
 The software is provided "as is", without warranty of any kind, express or

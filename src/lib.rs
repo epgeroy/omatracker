@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 pub mod agent;
 pub mod artifacts;
+pub mod backup;
 pub mod billing;
 pub mod clear_data;
 mod entities;
@@ -21,6 +22,7 @@ mod rates;
 pub mod skills;
 mod task_rates;
 pub mod templates;
+pub mod upgrade;
 mod workflows;
 pub use rates::{Estimate, HourlyRate};
 

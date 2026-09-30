@@ -37,7 +37,7 @@ check:
 	cargo test
 	cargo clippy --all-targets -- -D warnings
 	$(MAKE) template-check
-	omarchy plugin validate .
+	python tests/plugin-check.py
 	$(MAKE) qml-check
 	$(MAKE) ui-check
 	$(MAKE) install-check
