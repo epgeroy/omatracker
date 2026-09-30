@@ -51,6 +51,14 @@ Panel {
     labelVisible: true
     hasVisualContent: true
     active: tracker.anyRunning
+    activeColor: {
+      var accent = root.bar ? root.bar.urgent : Color.urgent
+      if (!root.bar || !root.bar.transparent) return accent
+      // Keep the running accent, but shade it toward the wallpaper-aware
+      // foreground so it stays legible on a transparent bar.
+      var foreground = root.bar.barForeground
+      return Qt.tint(foreground, Qt.rgba(accent.r, accent.g, accent.b, 0.5))
+    }
     tooltipText: "OmaTracker · " + tracker.runningTimers + " running · " + tracker.totalText
     onPressed: function(b) { if (b === Qt.LeftButton) root.toggle() }
   }
