@@ -38,6 +38,8 @@ Item {
   property real nowMs: Date.now()
   property real statusSnapshotMs: nowMs
   property int totalTrackedSeconds: 0
+  property int totalUninvoicedSeconds: 0
+  property int uninvoicedRunningTimers: 0
   property int activeProjectSeconds: 0
   property int runningTimers: 0
   property int activeProjectRunningTimers: 0
@@ -63,8 +65,10 @@ Item {
   readonly property bool anyRunning: runningTimers > 0
   readonly property int elapsedSinceStatus: Math.max(0, Math.floor((nowMs - statusSnapshotMs) / 1000))
   readonly property int displayTotalSeconds: totalTrackedSeconds + runningTimers * elapsedSinceStatus
+  readonly property int displayUninvoicedSeconds: totalUninvoicedSeconds + uninvoicedRunningTimers * elapsedSinceStatus
   readonly property int displayActiveProjectSeconds: activeProjectSeconds + activeProjectRunningTimers * elapsedSinceStatus
   readonly property string totalText: formatDuration(displayTotalSeconds)
+  readonly property string uninvoicedText: formatDuration(displayUninvoicedSeconds)
   readonly property string activeProjectText: formatDuration(displayActiveProjectSeconds)
   readonly property string activeProjectAmountText: RateModel.estimateText(
     activeProject ? activeProject.rate : null, activeProjectEstimate, displayActiveProjectSeconds)
@@ -246,6 +250,8 @@ Item {
       runningTasks = Array.isArray(next.runningTasks) ? next.runningTasks : []
       preferences = next.preferences || ({ hourlyClick: true, volume: 25, reducedMotion: false })
       totalTrackedSeconds = Math.max(0, Math.floor(Number(next.totalTrackedSeconds) || 0))
+      totalUninvoicedSeconds = Math.max(0, Math.floor(Number(next.totalUninvoicedSeconds) || 0))
+      uninvoicedRunningTimers = Math.max(0, Math.floor(Number(next.uninvoicedRunningTimers) || 0))
       activeProjectSeconds = Math.max(0, Math.floor(Number(next.activeProjectSeconds) || 0))
       runningTimers = Math.max(0, Math.floor(Number(next.runningTimers) || 0))
       activeProjectRunningTimers = 0

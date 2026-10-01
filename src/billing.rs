@@ -453,6 +453,77 @@ fn remaining(mut ranges: Vec<(i64, i64)>, occupied: &[(i64, i64)]) -> Vec<(i64, 
     ranges
 }
 
+/// Pending billable time for the tray, independent of task completion and counter resets.
+/// Drafts do not reserve time; void invoices release it. Live time is provisional.
+pub(crate) fn uninvoiced_totals(state: &State, now: i64) -> (i64, usize) {
+    let mut billed: BTreeMap<&str, Vec<(i64, i64)>> = BTreeMap::new();
+    for allocation in state
+        .billing
+        .invoices
+        .iter()
+        .filter(|i| i.state == "issued" || i.state == "paid")
+        .flat_map(|i| &i.allocations)
+    {
+        billed
+            .entry(&allocation.entry_id)
+            .or_default()
+            .push((allocation.start_at, allocation.end_at));
+    }
+    let mut seconds = 0;
+    for entry in &state.entries {
+        if state.billing.archived_projects.contains(&entry.project_id) {
+            continue;
+        }
+        let Some(meta) = state.billing.entries.get(&entry.id) else {
+            continue;
+        };
+        if !meta.resolved || meta.rate.is_none() || meta.externally_billed {
+            continue;
+        }
+        for (start, end) in remaining(
+            vec![(entry.started_at, entry.ended_at)],
+            billed.get(entry.id.as_str()).map_or(&[], Vec::as_slice),
+        ) {
+            seconds += entry_seconds(entry, start, end);
+        }
+    }
+    let mut running = 0;
+    for task in state.tasks.iter().filter(|task| {
+        task.is_tracking() && !state.billing.archived_projects.contains(&task.project_id)
+    }) {
+        let current = crate::task_rates::at(state, &task.id, &task.project_id, now);
+        if current.resolved && current.rate.is_some() {
+            running += 1;
+        }
+        if task.started_at <= 0 || task.started_at >= now {
+            continue;
+        }
+        let entry = Entry {
+            started_at: task.started_at,
+            ended_at: now,
+            seconds: (now - task.started_at) / 1000,
+            ..Default::default()
+        };
+        let mut boundaries = vec![task.started_at, now];
+        if let Some(project) = state.billing.projects.get(&task.project_id) {
+            boundaries.extend(project.rates.iter().map(|point| point.effective_at));
+        }
+        if let Some(points) = state.billing.task_rates.get(&task.id) {
+            boundaries.extend(points.iter().map(|point| point.effective_at));
+        }
+        boundaries.retain(|at| *at >= task.started_at && *at <= now);
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        for pair in boundaries.windows(2) {
+            let meta = crate::task_rates::at(state, &task.id, &task.project_id, pair[0]);
+            if meta.resolved && meta.rate.is_some() {
+                seconds += entry_seconds(&entry, pair[0], pair[1]);
+            }
+        }
+    }
+    (seconds, running)
+}
+
 pub fn allocations(
     state: &State,
     project: &str,
@@ -1008,4 +1079,59 @@ pub fn upload(path: &Path, id: &str) -> Result<Value> {
     })?;
     result?;
     Ok(json!({"id": id, "remotePath": destination, "uploadStatus": "complete"}))
+}
+
+#[cfg(test)]
+mod tray_tests {
+    use super::*;
+
+    #[test]
+    fn pending_live_time_respects_historical_rates_and_current_timer_eligibility() {
+        let mut state = State::default();
+        state.billing.projects.insert(
+            crate::DEFAULT_PROJECT_ID.into(),
+            ProjectBilling {
+                rates: vec![
+                    RatePoint {
+                        effective_at: 1,
+                        rate: Some(HourlyRate::parse("0", "USD").unwrap()),
+                    },
+                    RatePoint {
+                        effective_at: 4000,
+                        rate: None,
+                    },
+                    RatePoint {
+                        effective_at: 7000,
+                        rate: Some(HourlyRate::parse("50", "USD").unwrap()),
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        state.tasks.push(crate::Task {
+            id: "live".into(),
+            project_id: crate::DEFAULT_PROJECT_ID.into(),
+            status: crate::TaskStatus::Tracking,
+            started_at: 1000,
+            legacy_seconds: 999,
+            display_since: 8000,
+            ..Default::default()
+        });
+        assert_eq!(uninvoiced_totals(&state, 6000), (3, 0));
+        assert_eq!(uninvoiced_totals(&state, 10000), (6, 1));
+        state.billing.task_rates.insert(
+            "live".into(),
+            vec![crate::task_rates::RatePoint {
+                effective_at: 9000,
+                inherit_project: false,
+                rate: None,
+            }],
+        );
+        assert_eq!(uninvoiced_totals(&state, 10000), (5, 0));
+        state
+            .billing
+            .archived_projects
+            .insert(crate::DEFAULT_PROJECT_ID.into());
+        assert_eq!(uninvoiced_totals(&state, 10000), (0, 0));
+    }
 }

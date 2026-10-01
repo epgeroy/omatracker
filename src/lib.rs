@@ -249,6 +249,8 @@ pub struct Status {
     pub active_tasks: Vec<TaskView>,
     pub cockpit_tasks: Vec<CockpitTaskView>,
     pub total_tracked_seconds: i64,
+    pub total_uninvoiced_seconds: i64,
+    pub uninvoiced_running_timers: usize,
     pub active_project_seconds: i64,
     pub active_project_estimate: Option<Estimate>,
     pub running_timers: usize,
@@ -283,6 +285,8 @@ pub struct PresentationStatus {
     pub running_tasks: Vec<TaskView>,
     pub preferences: feedback::Preferences,
     pub total_tracked_seconds: i64,
+    pub total_uninvoiced_seconds: i64,
+    pub uninvoiced_running_timers: usize,
     pub active_project_seconds: i64,
     pub active_project_estimate: Option<Estimate>,
     pub running_timers: usize,
@@ -1417,6 +1421,8 @@ pub fn status(path: &Path) -> Result<Status> {
     let diagnostics = diagnostics(path);
     Ok(Status {
         total_tracked_seconds: presentation.total_tracked_seconds,
+        total_uninvoiced_seconds: presentation.total_uninvoiced_seconds,
+        uninvoiced_running_timers: presentation.uninvoiced_running_timers,
         active_project_seconds: presentation.active_project_seconds,
         active_project_estimate: presentation.active_project_estimate,
         running_timers: presentation.running_timers,
@@ -1445,6 +1451,8 @@ pub fn presentation_status(path: &Path) -> Result<PresentationStatus> {
 fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
     let totals = task_totals(state, now);
     let total_tracked_seconds = totals.iter().sum();
+    let (total_uninvoiced_seconds, uninvoiced_running_timers) =
+        billing::uninvoiced_totals(state, now);
     let active_project_seconds = state
         .tasks
         .iter()
@@ -1575,6 +1583,8 @@ fn build_presentation_status(state: &State, now: i64) -> PresentationStatus {
             .collect(),
         preferences: feedback::Preferences::default(),
         total_tracked_seconds,
+        total_uninvoiced_seconds,
+        uninvoiced_running_timers,
         active_project_seconds,
         running_timers: state.tasks.iter().filter(|task| task.is_tracking()).count(),
         report_status: report_status_text(state),

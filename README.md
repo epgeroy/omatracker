@@ -9,6 +9,14 @@ Track project time from the Omarchy bar, then turn it into PDF invoices.
   optionally upload them to Google Drive through [rclone](https://rclone.org).
 - Let coding agents record time through a local JSON interface; no MCP server is needed.
 
+The bar shows **uninvoiced billable time** across active projects, including
+provisional billable running time. Issued/paid invoices and externally billed
+entries are excluded; drafts remain pending and void invoices release their time.
+Completed tasks remain pending until invoiced. Non-billable, unresolved, and
+undated legacy time are excluded. Task counter resets do not hide uninvoiced work.
+The tooltip also shows the tracked counter total; task and project counters retain
+their existing history.
+
 Add the widget with `omarchy plugin add https://github.com/epgeroy/omatracker --enable`,
 or see [Plugin installation](#plugin-installation) and [Development build](#development-build).
 Typst and rclone are optional; `omatracker agent doctor` reports whether they are available.

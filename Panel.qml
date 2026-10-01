@@ -30,7 +30,7 @@ Panel {
     function toggle(): void { root.toggle() }
     function add(): void { root.open(); view.newTask() }
     function resetAll(): void { root.open(); view.confirm("reset-project", "", "Reset project counters?") }
-    function total(): string { return tracker.totalText }
+    function total(): string { return tracker.uninvoicedText }
     function refresh(): void { tracker.refresh() }
     function status(): string {
       return JSON.stringify({ loaded: tracker.loaded, backendPath: tracker.backendPath,
@@ -47,7 +47,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: tracker.totalText
+    text: tracker.uninvoicedText
     labelVisible: true
     hasVisualContent: true
     active: tracker.anyRunning
@@ -59,7 +59,8 @@ Panel {
       var foreground = root.bar.barForeground
       return Qt.tint(foreground, Qt.rgba(accent.r, accent.g, accent.b, 0.5))
     }
-    tooltipText: "OmaTracker · " + tracker.runningTimers + " running · " + tracker.totalText
+    tooltipText: "OmaTracker · " + tracker.uninvoicedText + " uninvoiced (including billable running time) · "
+      + tracker.runningTimers + " running · " + tracker.totalText + " tracked"
     onPressed: function(b) { if (b === Qt.LeftButton) root.toggle() }
   }
 

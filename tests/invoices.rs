@@ -85,6 +85,149 @@ fn fails(path: &Path, action: &str, input: Value, expected: &str) {
 }
 
 #[test]
+fn tray_pending_time_follows_partial_issuance_payment_and_voiding() {
+    let app = App::new();
+    app.add("2025-08-15T23:00:00Z", 7200);
+    call(&app.path, "task.complete", json!({"id":app.task}));
+    let all = app.draft();
+    let before = omatracker::presentation_status(&app.path).unwrap();
+    assert_eq!(before.total_uninvoiced_seconds, 7200);
+    assert_eq!(before.total_tracked_seconds, 7200);
+    assert_eq!(before.uninvoiced_running_timers, 0);
+
+    let early = call(
+        &app.path,
+        "invoice.create",
+        json!({"project":app.project,"from":"2025-08-01","to":"2025-08-16","currency":"USD"}),
+    );
+    let issued = app.issue(&early);
+    let after = omatracker::presentation_status(&app.path).unwrap();
+    assert_eq!(after.total_uninvoiced_seconds, 3600);
+    assert_eq!(after.total_tracked_seconds, 7200);
+    assert_eq!(
+        omatracker::status(&app.path)
+            .unwrap()
+            .total_uninvoiced_seconds,
+        3600
+    );
+
+    let paid = call(
+        &app.path,
+        "invoice.paid",
+        json!({"id":issued["id"],"revision":issued["revision"],"date":"2025-09-02"}),
+    );
+    assert_eq!(
+        omatracker::presentation_status(&app.path)
+            .unwrap()
+            .total_uninvoiced_seconds,
+        3600
+    );
+    call(
+        &app.path,
+        "invoice.void",
+        json!({"id":paid["id"],"revision":paid["revision"],"reason":"Replace document"}),
+    );
+    assert_eq!(
+        omatracker::presentation_status(&app.path)
+            .unwrap()
+            .total_uninvoiced_seconds,
+        7200
+    );
+    let refreshed = call(
+        &app.path,
+        "invoice.refresh",
+        json!({"id":all["id"],"revision":all["revision"]}),
+    );
+    app.issue(&refreshed);
+    let after = omatracker::presentation_status(&app.path).unwrap();
+    assert_eq!(after.total_uninvoiced_seconds, 0);
+    assert_eq!(after.total_tracked_seconds, 7200);
+}
+
+#[test]
+fn tray_pending_time_retains_corrected_deleted_task_work_and_excludes_unbillable_history() {
+    let app = App::new();
+    let entry = app.add("2025-08-10T10:00:00Z", 3600)["entries"][0]["entry"]["id"].clone();
+    call(
+        &app.path,
+        "entry.correct",
+        json!({"id":entry,"revision":0,"delta":-1800,"reason":"Correct timer"}),
+    );
+    omatracker::reset_task(&app.path, &app.task).unwrap();
+    assert_eq!(
+        omatracker::presentation_status(&app.path)
+            .unwrap()
+            .total_uninvoiced_seconds,
+        1800
+    );
+    call(&app.path, "task.remove", json!({"id":app.task}));
+
+    let task = call(
+        &app.path,
+        "task.create",
+        json!({"project":app.project,"title":"Other work"}),
+    )["id"]
+        .clone();
+    call(
+        &app.path,
+        "task.rate",
+        json!({"id":task,"noRate":true,"effectiveAt":"2025-08-01T00:00:00Z"}),
+    );
+    call(
+        &app.path,
+        "entry.add",
+        json!({"id":task,"start":"2025-08-11T10:00:00Z","seconds":3600}),
+    );
+    call(
+        &app.path,
+        "task.rate",
+        json!({"id":task,"rate":"0","currency":"USD","effectiveAt":"2025-08-12T00:00:00Z"}),
+    );
+    call(
+        &app.path,
+        "entry.add",
+        json!({"id":task,"start":"2025-08-12T10:00:00Z","seconds":600}),
+    );
+
+    // Older unresolved and externally billed entries must not inflate the tray.
+    let mut state = parse_state(&fs::read_to_string(&app.path).unwrap()).unwrap();
+    let mut unresolved = state.entries[0].clone();
+    unresolved.id = "unresolved".into();
+    let mut external = unresolved.clone();
+    external.id = "external".into();
+    state.billing.entries.insert(
+        external.id.clone(),
+        billing::EntryBilling {
+            resolved: true,
+            externally_billed: true,
+            rate: Some(omatracker::HourlyRate::parse("80", "USD").unwrap()),
+            ..Default::default()
+        },
+    );
+    state.entries.extend([unresolved, external]);
+    fs::write(&app.path, serde_json::to_vec(&state).unwrap()).unwrap();
+    let before = fs::read(&app.path).unwrap();
+    assert_eq!(
+        omatracker::presentation_status(&app.path)
+            .unwrap()
+            .total_uninvoiced_seconds,
+        2400
+    );
+    assert_eq!(
+        fs::read(&app.path).unwrap(),
+        before,
+        "status must not mutate the ledger"
+    );
+    call(&app.path, "project.remove", json!({"project":app.project}));
+    assert_eq!(
+        omatracker::presentation_status(&app.path)
+            .unwrap()
+            .total_uninvoiced_seconds,
+        0
+    );
+}
+
+#[test]
 fn historical_rates_split_sessions_and_no_rate_is_distinct_from_zero() {
     let app = App::new();
     call(

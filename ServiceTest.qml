@@ -63,6 +63,23 @@ Item {
           backgroundChecksEnabled: true, backgroundChecksActive: true }), { checkReports: true })
       } else if (root.phase === 3 && tracker.syncStatus === "synced" && !tracker.busy) {
         root.phase = 4
+        tracker.applyStatus(JSON.stringify({ state: {}, nowMs: Date.now(),
+          totalTrackedSeconds: 97696, totalUninvoicedSeconds: 3773,
+          runningTimers: 2, uninvoicedRunningTimers: 1 }))
+        tracker.nowMs = tracker.statusSnapshotMs + 3000
+        if (tracker.uninvoicedText !== "01:02:56" || tracker.totalText !== "27:08:22") {
+          console.error("Tray must display uninvoiced time and advance only billable timers")
+          Qt.quit()
+          return
+        }
+        tracker.applyStatus(JSON.stringify({ state: {}, nowMs: Date.now(),
+          totalTrackedSeconds: 97696, totalUninvoicedSeconds: 0,
+          runningTimers: 0, uninvoicedRunningTimers: 0 }))
+        if (tracker.uninvoicedText !== "00:00:00" || tracker.totalText !== "27:08:16") {
+          console.error("Invoicing must clear the tray without clearing tracked history")
+          Qt.quit()
+          return
+        }
         verification.running = true
       }
     }
